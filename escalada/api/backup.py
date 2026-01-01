@@ -350,6 +350,9 @@ async def restore_snapshots(
     snapshots: List[Dict[str, Any]],
     *,
     box_ids: List[int] | None = None,
+    hydrate_memory: bool = True,
+    broadcast_time_criterion: bool = True,
+    bump_sequences: bool = True,
 ) -> tuple[list[int], list[dict]]:
     """
     Restore snapshots into DB + in-memory state_map.
@@ -433,17 +436,18 @@ async def restore_snapshots(
         box.session_id = desired_session_id or box.session_id
         await session.flush()
 
-        # Sync in-memory snapshot
-        async with live.init_lock:
-            live.state_map[int(box_id)] = state
-            live.state_map[int(box_id)]["sessionId"] = box.session_id
-            live.state_map[int(box_id)]["boxVersion"] = box.box_version
+        # Sync in-memory snapshot (optional; disable for dry-run drills)
+        if hydrate_memory:
+            async with live.init_lock:
+                live.state_map[int(box_id)] = state
+                live.state_map[int(box_id)]["sessionId"] = box.session_id
+                live.state_map[int(box_id)]["boxVersion"] = box.box_version
         restored.append(int(box_id))
 
-    if restored:
+    if restored and bump_sequences:
         await _bump_pk_sequence(session, "boxes", "id")
 
-    if restored_time_criterion is not None:
+    if restored_time_criterion is not None and broadcast_time_criterion:
         try:
             async with live.time_criterion_lock:
                 live.time_criterion_enabled = bool(restored_time_criterion)
