@@ -138,7 +138,7 @@ def _get_actor_from_request_and_claims(
 
 
 @router.post("/cmd")
-async def cmd(cmd: Cmd, request: Request | None = None, claims=Depends(require_box_access)):
+async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_access)):
     """
     Handle competition commands with validation and rate limiting
 
