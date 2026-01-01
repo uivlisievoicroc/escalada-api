@@ -23,6 +23,10 @@ poetry run pip install -e ../escalada-core
 poetry run pytest tests -q
 ```
 
+## CI notes
+
+- Workflow-ul de CI instalează `escalada-core` din repo separat; dacă `escalada-core` este privat, setează secretul `ESCALADA_CORE_TOKEN` în GitHub Actions (PAT cu access read la `escalada-core`).
+
 ## Formatting & Hooks
 
 Python formatting is enforced via pre-commit with Black and isort.
