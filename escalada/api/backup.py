@@ -334,6 +334,14 @@ async def restore_snapshots(
       - reject if incoming boxVersion < current
     Returns: (restored_box_ids, conflicts)
     """
+    # Defensive: callers may reuse a long-lived session (tests, scripts).
+    # Clear identity map so we don't accidentally update stale ORM instances
+    # after TRUNCATE/RESTORE operations.
+    try:
+        session.expunge_all()
+    except Exception:
+        pass
+
     conflicts: list[dict] = []
     restored: list[int] = []
 
