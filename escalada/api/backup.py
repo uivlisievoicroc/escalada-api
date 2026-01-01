@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from escalada.auth.deps import require_role
 from escalada.api import live
+from escalada.api.official_export import build_official_results_zip, safe_zip_component
 from escalada.db.database import AsyncSessionLocal
 from escalada.db import repositories as repos
 from escalada.db.models import Box
@@ -37,6 +38,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
             "initiated": state.get("initiated", False),
             "holdsCount": state.get("holdsCount", 0),
             "routeIndex": state.get("routeIndex", 1),
+            "routesCount": state.get("routesCount") or state.get("routes_count"),
             "currentClimber": state.get("currentClimber", ""),
             "started": state.get("started", False),
             "timerState": state.get("timerState", "idle"),
@@ -63,6 +65,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
         "initiated": state.get("initiated", False),
         "holdsCount": state.get("holdsCount", 0),
         "routeIndex": state.get("routeIndex", 1),
+        "routesCount": box.routes_count,
         "currentClimber": state.get("currentClimber", ""),
         "started": state.get("started", False),
         "timerState": state.get("timerState", "idle"),
@@ -117,7 +120,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
     try:
         scores = snapshot.get("scores") or {}
         times = snapshot.get("times") or {}
-        route_count = state.get("routesCount") or state.get("routes_count") or 0
+        route_count = snapshot.get("routesCount") or 0
         if scores and route_count:
             df_overall = _build_overall_df(
                 type(
@@ -258,6 +261,29 @@ async def export_box_csv(box_id: int, claims=Depends(require_role(["admin"]))):
                 "Content-Disposition": f"attachment; filename=box_{box_id}_export.csv"
             },
         )
+
+
+@router.get("/export/official/box/{box_id}")
+async def export_official_results_zip(box_id: int, claims=Depends(require_role(["admin"]))):
+    """Export "official" results bundle (ZIP with XLSX+PDF) for a box."""
+    async with AsyncSessionLocal() as session:
+        snap = await _fetch_box_snapshot(session, box_id)
+        if not snap:
+            raise HTTPException(status_code=404, detail="box_not_found")
+
+    try:
+        zip_bytes = build_official_results_zip(snap)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    folder = safe_zip_component(str(snap.get("categorie") or f"box_{box_id}"))
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    filename = f"official_{folder}_box{box_id}_{ts}.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 class RestoreRequest(BaseModel):
