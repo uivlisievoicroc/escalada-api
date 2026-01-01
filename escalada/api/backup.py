@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -10,11 +11,13 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from escalada.auth.deps import require_role
 from escalada.api import live
 from escalada.db.database import AsyncSessionLocal
 from escalada.db import repositories as repos
+from escalada.db.models import Box
 from escalada.api.save_ranking import _build_overall_df, _format_time
 
 router = APIRouter()
@@ -262,70 +265,178 @@ class RestoreRequest(BaseModel):
     box_ids: List[int] | None = None
 
 
+def _state_from_backup_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert an external backup snapshot (as returned by /backup/*) back into
+    internal live state shape (as used by escalada.api.live).
+    """
+    session_id = snapshot.get("sessionId")
+    box_version = snapshot.get("boxVersion", 0) or 0
+
+    state = live._default_state(session_id)
+    state.update(
+        {
+            "initiated": bool(snapshot.get("initiated", False)),
+            "holdsCount": snapshot.get("holdsCount", 0) or 0,
+            "routeIndex": snapshot.get("routeIndex", 1) or 1,
+            "currentClimber": snapshot.get("currentClimber", "") or "",
+            "started": bool(snapshot.get("started", False)),
+            "timerState": snapshot.get("timerState", "idle") or "idle",
+            "holdCount": snapshot.get("holdCount", 0.0) or 0.0,
+            "competitors": snapshot.get("competitors", []) or [],
+            "categorie": snapshot.get("categorie", "") or "",
+            "lastRegisteredTime": snapshot.get("registeredTime"),
+            "remaining": snapshot.get("remaining"),
+            "timerPreset": snapshot.get("timerPreset"),
+            "timerPresetSec": snapshot.get("timerPresetSec"),
+            "scores": snapshot.get("scores") or {},
+            "times": snapshot.get("times") or {},
+            "timeCriterionEnabled": snapshot.get("timeCriterionEnabled"),
+            "sessionId": session_id or state.get("sessionId"),
+            "boxVersion": box_version,
+        }
+    )
+    return state
+
+
+async def _bump_pk_sequence(session, table_name: str, column_name: str) -> None:
+    """Postgres: bump SERIAL/IDENTITY sequence after explicit PK inserts."""
+    try:
+        seq_result = await session.execute(
+            text("SELECT pg_get_serial_sequence(:t, :c)"),
+            {"t": table_name, "c": column_name},
+        )
+        seq_name = seq_result.scalar_one_or_none()
+        if not seq_name:
+            return
+        await session.execute(
+            text(
+                f"SELECT setval('{seq_name}', (SELECT MAX({column_name}) FROM {table_name}))"
+            )
+        )
+    except Exception:
+        # Non-Postgres or missing privileges: ignore (best-effort)
+        return
+
+
+async def restore_snapshots(
+    session,
+    snapshots: List[Dict[str, Any]],
+    *,
+    box_ids: List[int] | None = None,
+) -> tuple[list[int], list[dict]]:
+    """
+    Restore snapshots into DB + in-memory state_map.
+
+    Policy:
+      - accept if incoming boxVersion > current
+      - accept if same version and sessionId matches (when both present)
+      - reject if incoming boxVersion < current
+    Returns: (restored_box_ids, conflicts)
+    """
+    conflicts: list[dict] = []
+    restored: list[int] = []
+
+    box_repo = repos.BoxRepository(session)
+    comp_repo = repos.CompetitionRepository(session)
+    comp = await comp_repo.get_by_name("Restored Default")
+    if not comp:
+        comp = await comp_repo.create(name="Restored Default")
+        await session.flush()
+
+    restored_time_criterion = None
+
+    for snap in snapshots:
+        box_id = snap.get("boxId")
+        if box_ids and box_id not in box_ids:
+            continue
+        if box_id is None:
+            continue
+
+        state = _state_from_backup_snapshot(snap)
+        desired_version = state.get("boxVersion", 0) or 0
+        desired_session_id = state.get("sessionId")
+
+        # Best-effort: restore global time criterion from snapshots
+        if restored_time_criterion is None and snap.get("timeCriterionEnabled") is not None:
+            restored_time_criterion = bool(snap.get("timeCriterionEnabled"))
+
+        box = await box_repo.get_by_id(box_id)
+        current_version = box.box_version if box else -1
+        current_session = box.session_id if box else None
+
+        if box and desired_version < current_version:
+            conflicts.append({"boxId": box_id, "reason": "lower_version"})
+            continue
+        if (
+            box
+            and desired_version == current_version
+            and desired_session_id
+            and current_session
+            and desired_session_id != current_session
+        ):
+            conflicts.append({"boxId": box_id, "reason": "session_conflict"})
+            continue
+
+        if not box:
+            # Create box with explicit ID to preserve UI addressing on full restore.
+            box = Box(
+                id=int(box_id),
+                competition_id=comp.id,
+                name=f"Restored Box {box_id}",
+                route_index=int(state.get("routeIndex", 1) or 1),
+                routes_count=int(state.get("routesCount", 1) or 1),
+                holds_count=int(state.get("holdsCount", 0) or 0),
+                state={},
+                box_version=0,
+                session_id=desired_session_id or str(uuid.uuid4()),
+            )
+            session.add(box)
+            await session.flush()
+
+        box.state = state
+        box.box_version = int(desired_version)
+        box.session_id = desired_session_id or box.session_id
+        await session.flush()
+
+        # Sync in-memory snapshot
+        async with live.init_lock:
+            live.state_map[int(box_id)] = state
+            live.state_map[int(box_id)]["sessionId"] = box.session_id
+            live.state_map[int(box_id)]["boxVersion"] = box.box_version
+        restored.append(int(box_id))
+
+    if restored:
+        await _bump_pk_sequence(session, "boxes", "id")
+
+    if restored_time_criterion is not None:
+        try:
+            async with live.time_criterion_lock:
+                live.time_criterion_enabled = bool(restored_time_criterion)
+            await live._broadcast_time_criterion(
+                {
+                    "type": "TIME_CRITERION",
+                    "timeCriterionEnabled": live.time_criterion_enabled,
+                }
+            )
+        except Exception:
+            pass
+
+    return restored, conflicts
+
+
 @router.post("/restore")
 async def restore_backup(payload: RestoreRequest, claims=Depends(require_role(["admin"]))):
     """
     Restore snapshots. Policy: accept if incoming boxVersion > current OR same version with matching sessionId.
     Otherwise raise conflict.
     """
-    conflicts = []
-    restored = []
     async with AsyncSessionLocal() as session:
-        box_repo = repos.BoxRepository(session)
-        comp_repo = repos.CompetitionRepository(session)
-        comp = await comp_repo.get_by_name("Restored Default")
-        if not comp:
-            comp = await comp_repo.create(name="Restored Default")
-        for snap in payload.snapshots:
-            box_id = snap.get("boxId")
-            if payload.box_ids and box_id not in payload.box_ids:
-                continue
-            if box_id is None:
-                continue
-            desired_version = snap.get("boxVersion", 0)
-            session_id = snap.get("sessionId")
-
-            # Clone snapshot into state and drop only non-state extras
-            state = snap.copy()
-            state.pop("ranking", None)
-            state["scores"] = snap.get("scores") or {}
-            state["times"] = snap.get("times") or {}
-
-            box = await box_repo.get_by_id(box_id)
-            current_version = box.box_version if box else -1
-            current_session = box.session_id if box else None
-
-            if box and desired_version < current_version:
-                conflicts.append({"boxId": box_id, "reason": "lower_version"})
-                continue
-            if box and desired_version == current_version and session_id and current_session and session_id != current_session:
-                conflicts.append({"boxId": box_id, "reason": "session_conflict"})
-                continue
-
-            if not box:
-                # create box with provided state
-                new_box = await box_repo.create(
-                    competition_id=comp.id,
-                    name=f"Restored Box {box_id}",
-                    route_index=state.get("routeIndex", 1) or 1,
-                    routes_count=state.get("routesCount", 1) or 1,
-                    holds_count=state.get("holdsCount", 0) or 0,
-                )
-                await session.flush()
-                box = new_box
-
-            box.state = state
-            box.box_version = desired_version
-            box.session_id = session_id or box.session_id
-            await session.flush()
-
-            # sync in-memory snapshot
-            async with live.init_lock:
-                live.state_map[box_id] = state
-                live.state_map[box_id]["sessionId"] = box.session_id
-                live.state_map[box_id]["boxVersion"] = box.box_version
-            restored.append(box_id)
-
+        restored, conflicts = await restore_snapshots(
+            session,
+            payload.snapshots,
+            box_ids=payload.box_ids,
+        )
         await session.commit()
 
     if conflicts:

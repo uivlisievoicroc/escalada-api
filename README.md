@@ -23,6 +23,14 @@ poetry run pip install -e ../escalada-core
 poetry run pytest tests -q
 ```
 
+## Backup & restore (ops)
+
+- Backup JSON (single box): `GET /api/admin/backup/box/{boxId}`
+- Backup JSON (all boxes): `GET /api/admin/backup/full`
+- Restore din backup: `POST /api/admin/restore` cu payload `{"snapshots":[...]}`
+- Periodic backups: controlate de `BACKUP_INTERVAL_MIN`, `BACKUP_RETENTION_FILES`, `BACKUP_DIR` (vezi `escalada/main.py`)
+- Drill automat (DB + restore + sequence bump): `tests/test_backup_restore_drill.py`
+
 ## CI notes
 
 - Workflow-ul de CI instalează `escalada-core` din repo separat; dacă `escalada-core` este privat, setează secretul `ESCALADA_CORE_TOKEN` în GitHub Actions (PAT cu access read la `escalada-core`).
