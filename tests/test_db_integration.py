@@ -150,6 +150,37 @@ async def test_event_dedup_by_action_id(db_session):
 
 
 @pytest.mark.asyncio
+async def test_event_audit_actor_fields(db_session):
+    """Audit metadata (user/role/ip) is persisted on events."""
+    comp_repo = CompetitionRepository(db_session)
+    comp = await comp_repo.create("Audit Meta Comp")
+    box_repo = BoxRepository(db_session)
+    box = await box_repo.create(comp.id, "Audit Box", routes_count=1, holds_count=10)
+    await db_session.commit()
+
+    event_repo = EventRepository(db_session)
+    ev = await event_repo.log_event(
+        comp.id,
+        action="START_TIMER",
+        payload={"type": "START_TIMER"},
+        box_id=box.id,
+        session_id="sess-1",
+        box_version=1,
+        action_id=str(uuid.uuid4()),
+        actor_username="user-judge",
+        actor_role="judge",
+        actor_ip="127.0.0.1",
+        actor_user_agent="pytest",
+    )
+    await db_session.commit()
+
+    assert ev.actor_username == "user-judge"
+    assert ev.actor_role == "judge"
+    assert ev.actor_ip == "127.0.0.1"
+    assert ev.actor_user_agent == "pytest"
+
+
+@pytest.mark.asyncio
 async def test_competitor_unique_bib(db_session):
     """Test unique constraint on (competition_id, bib)."""
     comp_repo = CompetitionRepository(db_session)

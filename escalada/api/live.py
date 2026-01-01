@@ -3,9 +3,11 @@ import asyncio
 import json
 import logging
 # state per boxId
+from contextvars import ContextVar
+from typing import Any
 from typing import Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from starlette.websockets import WebSocket
@@ -38,6 +40,7 @@ state_locks: Dict[int, asyncio.Lock] = {}  # Lock per boxId
 init_lock = asyncio.Lock()  # Protects state_map and state_locks initialization
 time_criterion_enabled: bool = False
 time_criterion_lock = asyncio.Lock()  # Global time criterion lock
+current_actor: ContextVar[dict[str, Any] | None] = ContextVar("current_actor", default=None)
 
 
 router = APIRouter()
@@ -117,8 +120,25 @@ class Cmd(BaseModel):
     boxVersion: int | None = None
 
 
+def _get_actor_from_request_and_claims(
+    request: Request | None, claims: dict | None
+) -> dict[str, Any] | None:
+    if not claims or not isinstance(claims, dict):
+        return None
+    username = claims.get("sub")
+    role = claims.get("role")
+    if not username and not role:
+        return None
+    ip = None
+    user_agent = None
+    if request is not None:
+        ip = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+    return {"username": username, "role": role, "ip": ip, "user_agent": user_agent}
+
+
 @router.post("/cmd")
-async def cmd(cmd: Cmd, claims=Depends(require_box_access)):
+async def cmd(cmd: Cmd, request: Request | None = None, claims=Depends(require_box_access)):
     """
     Handle competition commands with validation and rate limiting
 
@@ -135,108 +155,129 @@ async def cmd(cmd: Cmd, claims=Depends(require_box_access)):
     - Per-command-type limits (e.g., PROGRESS_UPDATE: 120/min)
     """
 
-    # ==================== VALIDATION ====================
-    # Map legacy "time" field to registeredTime when provided
-    if cmd.registeredTime is None and cmd.time is not None:
-        cmd.registeredTime = cmd.time
-
+    actor_token = current_actor.set(
+        _get_actor_from_request_and_claims(
+            request,
+            claims if isinstance(claims, dict) else None,
+        )
+    )
     try:
+        # ==================== VALIDATION ====================
+        # Map legacy "time" field to registeredTime when provided
+        if cmd.registeredTime is None and cmd.time is not None:
+            cmd.registeredTime = cmd.time
+
+        # ==================== VALIDATION ====================
+        try:
+            if VALIDATION_ENABLED:
+                # Build dict with only non-None values
+                cmd_data = {k: v for k, v in cmd.model_dump().items() if v is not None}
+                if "time" in cmd_data and "registeredTime" not in cmd_data:
+                    cmd_data["registeredTime"] = cmd_data.pop("time")
+                # Validate and sanitize input
+                validated_cmd = ValidatedCmd(**cmd_data)
+            else:
+                # Validation disabled - use cmd as is
+                validated_cmd = cmd
+        except Exception as e:
+            logger.warning(f"Command validation failed for box {cmd.boxId}: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid command: {str(e)}")
+
+        # ==================== RATE LIMITING ====================
+        # Skip rate limiting in test mode (when VALIDATION_ENABLED is False)
         if VALIDATION_ENABLED:
-            # Build dict with only non-None values
-            cmd_data = {k: v for k, v in cmd.model_dump().items() if v is not None}
-            if "time" in cmd_data and "registeredTime" not in cmd_data:
-                cmd_data["registeredTime"] = cmd_data.pop("time")
-            # Validate and sanitize input
-            validated_cmd = ValidatedCmd(**cmd_data)
-        else:
-            # Validation disabled - use cmd as is
-            validated_cmd = cmd
-    except Exception as e:
-        logger.warning(f"Command validation failed for box {cmd.boxId}: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid command: {str(e)}")
+            is_allowed, reason = check_rate_limit(cmd.boxId, cmd.type)
+            if not is_allowed:
+                logger.warning(f"Rate limit exceeded for box {cmd.boxId}: {reason}")
+                raise HTTPException(status_code=429, detail=reason)
 
-    # ==================== RATE LIMITING ====================
-    # Skip rate limiting in test mode (when VALIDATION_ENABLED is False)
-    if VALIDATION_ENABLED:
-        is_allowed, reason = check_rate_limit(cmd.boxId, cmd.type)
-        if not is_allowed:
-            logger.warning(f"Rate limit exceeded for box {cmd.boxId}: {reason}")
-            raise HTTPException(status_code=429, detail=reason)
+        # ==================== SANITIZATION ====================
+        # Validation already checks for SQL injection/XSS in ValidatedCmd
+        # No additional sanitization needed - preserve original input including diacritics
 
-    # ==================== SANITIZATION ====================
-    # Validation already checks for SQL injection/XSS in ValidatedCmd
-    # No additional sanitization needed - preserve original input including diacritics
+        print(f"Backend received cmd: {cmd}")
 
-    print(f"Backend received cmd: {cmd}")
+        # ==================== ATOMIC STATE INITIALIZATION ====================
+        # CRITICAL FIX: Keep lock acquired across entire initialization to prevent race conditions
+        # Get or create the box-specific lock under global init_lock protection
+        async with init_lock:
+            if cmd.boxId not in state_locks:
+                state_locks[cmd.boxId] = asyncio.Lock()
+            lock = state_locks[cmd.boxId]
 
-    # ==================== ATOMIC STATE INITIALIZATION ====================
-    # CRITICAL FIX: Keep lock acquired across entire initialization to prevent race conditions
-    # Get or create the box-specific lock under global init_lock protection
-    async with init_lock:
-        if cmd.boxId not in state_locks:
-            state_locks[cmd.boxId] = asyncio.Lock()
-        lock = state_locks[cmd.boxId]
-
-    # Toggle global time criterion without touching per‑box state
-    if cmd.type == "SET_TIME_CRITERION":
-        global time_criterion_enabled
-        async with time_criterion_lock:
-            time_criterion_enabled, tc_payload = toggle_time_criterion(
-                time_criterion_enabled, cmd.timeCriterionEnabled
-            )
-        await _broadcast_time_criterion(tc_payload)
-        return {"status": "ok"}
-
-    # Lock state access for this boxId
-    async with lock:
-        # Initialize state INSIDE the lock (no window for race condition)
-        sm = await _ensure_state(cmd.boxId)
-
-        # ==================== SESSION & VERSION VALIDATION ====================
-        # Enforce session/version only when validation is enabled (test-mode bypass)
-        if VALIDATION_ENABLED:
-            validation_error: ValidationError | None = validate_session_and_version(
-                sm,
-                cmd.model_dump(),
-                require_session=cmd.type != "INIT_ROUTE",
-            )
-            if validation_error:
-                if validation_error.status_code:
-                    logger.warning(
-                        f"Command {cmd.type} for box {cmd.boxId} missing sessionId"
-                    )
-                    raise HTTPException(
-                        status_code=validation_error.status_code,
-                        detail=validation_error.message,
-                    )
-                if validation_error.kind:
-                    logger.warning(
-                        f"Command {cmd.type} for box {cmd.boxId} rejected: {validation_error.kind}"
-                    )
-                    return {"status": "ignored", "reason": validation_error.kind}
-
-        # Handle request-state early (transport-only)
-        if cmd.type == "REQUEST_STATE":
-            await _send_state_snapshot(cmd.boxId)
+        # Toggle global time criterion without touching per‑box state
+        if cmd.type == "SET_TIME_CRITERION":
+            global time_criterion_enabled
+            async with time_criterion_lock:
+                time_criterion_enabled, tc_payload = toggle_time_criterion(
+                    time_criterion_enabled, cmd.timeCriterionEnabled
+                )
+            # Persist an audit event (best-effort; does not affect live behavior)
+            try:
+                await _persist_audit_only(
+                    action="SET_TIME_CRITERION",
+                    payload=tc_payload,
+                )
+            except Exception:
+                pass
+            await _broadcast_time_criterion(tc_payload)
             return {"status": "ok"}
 
-        outcome = apply_command(sm, cmd.model_dump())
-        sm = outcome.state
-        cmd_payload = outcome.cmd_payload
+        # Lock state access for this boxId
+        async with lock:
+            # Initialize state INSIDE the lock (no window for race condition)
+            sm = await _ensure_state(cmd.boxId)
 
-        # Persist snapshot + audit log for state-changing commands
-        persist_result = await _persist_state(cmd.boxId, sm, cmd.type, cmd_payload)
-        if persist_result == "stale":
-            return {"status": "ignored", "reason": "stale_version"}
+            # ==================== SESSION & VERSION VALIDATION ====================
+            # Enforce session/version only when validation is enabled (test-mode bypass)
+            if VALIDATION_ENABLED:
+                validation_error: ValidationError | None = validate_session_and_version(
+                    sm,
+                    cmd.model_dump(),
+                    require_session=cmd.type != "INIT_ROUTE",
+                )
+                if validation_error:
+                    if validation_error.status_code:
+                        logger.warning(
+                            f"Command {cmd.type} for box {cmd.boxId} missing sessionId"
+                        )
+                        raise HTTPException(
+                            status_code=validation_error.status_code,
+                            detail=validation_error.message,
+                        )
+                    if validation_error.kind:
+                        logger.warning(
+                            f"Command {cmd.type} for box {cmd.boxId} rejected: {validation_error.kind}"
+                        )
+                        return {"status": "ignored", "reason": validation_error.kind}
 
-        # Broadcast command echo to all active WebSockets for this box
-        await _broadcast_to_box(cmd.boxId, cmd_payload)
+            # Handle request-state early (transport-only)
+            if cmd.type == "REQUEST_STATE":
+                await _send_state_snapshot(cmd.boxId)
+                return {"status": "ok"}
 
-        # Send authoritative snapshot for real-time clients when needed
-        if outcome.snapshot_required:
-            await _send_state_snapshot(cmd.boxId)
+            outcome = apply_command(sm, cmd.model_dump())
+            sm = outcome.state
+            cmd_payload = outcome.cmd_payload
 
-    return {"status": "ok"}
+            # Persist snapshot + audit log for state-changing commands
+            persist_result = await _persist_state(cmd.boxId, sm, cmd.type, cmd_payload)
+            if persist_result == "stale":
+                return {"status": "ignored", "reason": "stale_version"}
+
+            # Broadcast command echo to all active WebSockets for this box
+            await _broadcast_to_box(cmd.boxId, cmd_payload)
+
+            # Send authoritative snapshot for real-time clients when needed
+            if outcome.snapshot_required:
+                await _send_state_snapshot(cmd.boxId)
+
+        return {"status": "ok"}
+    finally:
+        try:
+            current_actor.reset(actor_token)
+        except Exception:
+            pass
 
 
 async def _heartbeat(ws: WebSocket, box_id: int) -> None:
@@ -552,12 +593,43 @@ async def _persist_state(box_id: int, state: dict, action: str, payload: dict) -
                 session_id=state.get("sessionId"),
                 box_version=state.get("boxVersion", 0) or 0,
                 action_id=payload.get("actionId") if isinstance(payload, dict) else None,
+                actor_username=(current_actor.get() or {}).get("username"),
+                actor_role=(current_actor.get() or {}).get("role"),
+                actor_ip=(current_actor.get() or {}).get("ip"),
+                actor_user_agent=(current_actor.get() or {}).get("user_agent"),
             )
             await session.commit()
             return "ok"
     except Exception as e:
         logger.warning(f"Failed to persist state for box {box_id}: {e}")
         return "error"
+
+
+async def _persist_audit_only(action: str, payload: dict) -> None:
+    """Persist an audit event that doesn't mutate box state (best-effort)."""
+    async with AsyncSessionLocal() as session:
+        comp_repo = repos.CompetitionRepository(session)
+        event_repo = repos.EventRepository(session)
+        comp = await comp_repo.get_by_name("Runtime Default")
+        if not comp:
+            comp = await comp_repo.create(name="Runtime Default")
+            await session.flush()
+
+        actor = current_actor.get() or {}
+        await event_repo.log_event(
+            competition_id=comp.id,
+            action=action,
+            payload=payload,
+            box_id=None,
+            session_id=None,
+            box_version=0,
+            action_id=payload.get("actionId") if isinstance(payload, dict) else None,
+            actor_username=actor.get("username"),
+            actor_role=actor.get("role"),
+            actor_ip=actor.get("ip"),
+            actor_user_agent=actor.get("user_agent"),
+        )
+        await session.commit()
 
 
 def _default_state(session_id: str | None = None) -> dict:

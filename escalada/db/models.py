@@ -164,6 +164,10 @@ class Event(Base):
     action_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
+    actor_username: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    actor_role: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    actor_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    actor_user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

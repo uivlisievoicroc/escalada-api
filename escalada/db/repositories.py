@@ -169,6 +169,10 @@ class EventRepository:
         session_id: str | None = None,
         box_version: int = 0,
         action_id: str | None = None,
+        actor_username: str | None = None,
+        actor_role: str | None = None,
+        actor_ip: str | None = None,
+        actor_user_agent: str | None = None,
     ) -> Event:
         """Append an event to the log. Raises IntegrityError on duplicate action_id."""
         event = Event(
@@ -180,6 +184,10 @@ class EventRepository:
             session_id=session_id,
             box_version=box_version,
             action_id=action_id,
+            actor_username=actor_username,
+            actor_role=actor_role,
+            actor_ip=actor_ip,
+            actor_user_agent=actor_user_agent,
         )
         self.session.add(event)
         try:
