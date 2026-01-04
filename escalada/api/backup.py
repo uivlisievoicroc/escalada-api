@@ -47,7 +47,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
             "categorie": state.get("categorie", ""),
             "registeredTime": state.get("lastRegisteredTime"),
             "remaining": state.get("remaining"),
-            "timeCriterionEnabled": state.get("timeCriterionEnabled"),
+            "timeCriterionEnabled": getattr(live, "time_criterion_enabled", False),
             "timerPreset": state.get("timerPreset"),
             "timerPresetSec": state.get("timerPresetSec"),
             "sessionId": state.get("sessionId"),
@@ -58,25 +58,33 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
         }
 
     # Build snapshot similar to /api/state
-    state = box.state or {}
+    state_db = box.state or {}
+    state_live = live.state_map.get(box_id) or {}
+    scores = state_db.get("scores") or state_live.get("scores") or {}
+    times = state_db.get("times") or state_live.get("times") or {}
+    categorie = state_db.get("categorie") or state_live.get("categorie") or ""
+    competitors_state = state_db.get("competitors")
+    if competitors_state is None:
+        competitors_state = state_live.get("competitors")
+    state = state_db
     snapshot = {
         "boxId": box.id,
         "competitionId": box.competition_id,
-        "initiated": state.get("initiated", False),
-        "holdsCount": state.get("holdsCount", 0),
-        "routeIndex": state.get("routeIndex", 1),
+        "initiated": state.get("initiated", state_live.get("initiated", False)),
+        "holdsCount": state.get("holdsCount", state_live.get("holdsCount", 0)),
+        "routeIndex": state.get("routeIndex", state_live.get("routeIndex", 1)),
         "routesCount": box.routes_count,
-        "currentClimber": state.get("currentClimber", ""),
-        "started": state.get("started", False),
-        "timerState": state.get("timerState", "idle"),
-        "holdCount": state.get("holdCount", 0.0),
-        "competitors": state.get("competitors", []),
-        "categorie": state.get("categorie", ""),
-        "registeredTime": state.get("lastRegisteredTime"),
-        "remaining": state.get("remaining"),
-        "timeCriterionEnabled": state.get("timeCriterionEnabled"),
-        "timerPreset": state.get("timerPreset"),
-        "timerPresetSec": state.get("timerPresetSec"),
+        "currentClimber": state.get("currentClimber", state_live.get("currentClimber", "")),
+        "started": state.get("started", state_live.get("started", False)),
+        "timerState": state.get("timerState", state_live.get("timerState", "idle")),
+        "holdCount": state.get("holdCount", state_live.get("holdCount", 0.0)),
+        "competitors": competitors_state or [],
+        "categorie": categorie,
+        "registeredTime": state.get("lastRegisteredTime", state_live.get("lastRegisteredTime")),
+        "remaining": state.get("remaining", state_live.get("remaining")),
+        "timeCriterionEnabled": getattr(live, "time_criterion_enabled", False),
+        "timerPreset": state.get("timerPreset", state_live.get("timerPreset")),
+        "timerPresetSec": state.get("timerPresetSec", state_live.get("timerPresetSec")),
         "sessionId": box.session_id,
         "boxVersion": box.box_version or 0,
     }
@@ -96,8 +104,8 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
     ]
 
     # Minimal “scores” placeholder (extend as needed)
-    snapshot["scores"] = state.get("scores", {})
-    snapshot["times"] = state.get("times", {})
+    snapshot["scores"] = scores
+    snapshot["times"] = times
 
     # If DB competitors missing but state has them, include minimal list
     if not snapshot.get("competitorsAll"):
@@ -132,7 +140,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
                         "clubs": {},
                         "include_clubs": False,
                         "times": times,
-                        "use_time_tiebreak": bool(state.get("timeCriterionEnabled")),
+                        "use_time_tiebreak": bool(snapshot.get("timeCriterionEnabled")),
                     },
                 ),
                 times,

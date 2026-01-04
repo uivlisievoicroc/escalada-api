@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import uuid
 # state per boxId
 from contextvars import ContextVar
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from starlette.websockets import WebSocket
 
 from escalada.rate_limit import check_rate_limit
@@ -280,9 +281,8 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
             pass
 
 
-async def _heartbeat(ws: WebSocket, box_id: int) -> None:
+async def _heartbeat(ws: WebSocket, box_id: int, last_pong: dict[str, float]) -> None:
     """Send PING every 30s; close if no PONG for 60s."""
-    last_pong = asyncio.get_event_loop().time()
     heartbeat_interval = 30
     heartbeat_timeout = 60
 
@@ -292,7 +292,7 @@ async def _heartbeat(ws: WebSocket, box_id: int) -> None:
             now = asyncio.get_event_loop().time()
 
             # Check timeout
-            if now - last_pong > heartbeat_timeout:
+            if now - (last_pong.get("ts") or 0.0) > heartbeat_timeout:
                 logger.warning(f"Heartbeat timeout for box {box_id}, closing")
                 try:
                     await ws.close(code=1000)
@@ -374,7 +374,8 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
     await _send_state_snapshot(box_id, targets={ws})
 
     # Start heartbeat task
-    heartbeat_task = asyncio.create_task(_heartbeat(ws, box_id))
+    last_pong = {"ts": asyncio.get_event_loop().time()}
+    heartbeat_task = asyncio.create_task(_heartbeat(ws, box_id, last_pong))
 
     try:
         while True:
@@ -396,6 +397,7 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
 
                     # Acknowledge PONG
                     if msg_type == "PONG":
+                        last_pong["ts"] = asyncio.get_event_loop().time()
                         continue
 
                     # NEW: Handle REQUEST_STATE command
@@ -475,6 +477,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "timerPreset": state.get("timerPreset"),
         "timerPresetSec": state.get("timerPresetSec"),
         "sessionId": state.get("sessionId"),  # Include session ID for client validation
+        "boxVersion": state.get("boxVersion", 0),
     }
 
 
@@ -548,18 +551,36 @@ async def _persist_state(box_id: int, state: dict, action: str, payload: dict) -
 
             box = await box_repo.get_by_id(box_id)
             if not box:
-                # Create a default competition/box so we don't drop events for new boxes
+                # Create a default competition/box so we don't drop events for new boxes.
+                #
+                # IMPORTANT: Use an explicit Box.id matching box_id to preserve the UI's
+                # stable addressing (0..N). Otherwise, auto-increment IDs will drift and
+                # exports/backups by boxId will read the wrong rows.
                 comp = await comp_repo.get_by_name("Runtime Default")
                 if not comp:
                     comp = await comp_repo.create(name="Runtime Default")
-                box = await box_repo.create(
+                box = Box(
+                    id=int(box_id),
                     competition_id=comp.id,
                     name=f"Box {box_id}",
                     route_index=state.get("routeIndex", 1) or 1,
                     routes_count=state.get("routesCount", 1) or 1,
                     holds_count=state.get("holdsCount", 0) or 0,
+                    state={},
+                    box_version=0,
+                    session_id=state.get("sessionId") or str(uuid.uuid4()),
                 )
+                session.add(box)
                 await session.flush()
+                # Best-effort: keep Postgres sequence >= MAX(id) for future inserts.
+                try:
+                    await session.execute(
+                        text(
+                            "SELECT setval(pg_get_serial_sequence('boxes','id'), (SELECT MAX(id) FROM boxes))"
+                        )
+                    )
+                except Exception:
+                    pass
 
             current_db_version = box.box_version or 0
             updated_box, success = await box_repo.update_state_with_version(
