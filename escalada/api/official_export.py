@@ -61,23 +61,20 @@ def _build_route_df(
         route_entries,
         key=lambda x: (
             -x[1] if x[1] is not None else float("inf"),
-            (x[2] if (use_time_tiebreak and x[2] is not None) else float("inf")),
             x[0].lower(),
         ),
     )
 
     ranks: list[int] = []
     prev_score: float | None = None
-    prev_time: int | None = None
     prev_rank = 0
     for idx, (_, score, tm) in enumerate(route_entries_sorted, start=1):
-        if score == prev_score and ((not use_time_tiebreak) or tm == prev_time):
+        if score == prev_score:
             rank = prev_rank
         else:
             rank = idx
         ranks.append(rank)
         prev_score = score
-        prev_time = tm
         prev_rank = rank
 
     points: dict[str, float] = {}
@@ -90,8 +87,6 @@ def _build_route_df(
         while j < len(route_entries_sorted):
             name_j, score_j, time_j = route_entries_sorted[j]
             if score_j != score_i:
-                break
-            if use_time_tiebreak and time_j != time_i:
                 break
             same.append((name_j, score_j, time_j))
             j += 1
@@ -139,6 +134,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
     if route_count <= 0:
         raise ValueError("missing_routes_count")
 
+    # Legacy flag: controls time column display only (no tie-breaking).
     use_time = bool(snapshot.get("timeCriterionEnabled"))
 
     payload = RankingIn(
@@ -194,4 +190,3 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
             for p in file_paths:
                 zf.write(p, arcname=f"{folder}/{p.name}")
         return buf.getvalue()
-

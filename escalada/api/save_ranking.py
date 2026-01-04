@@ -66,6 +66,7 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
     raw_times = payload.times or {}
     # normalize toate timpiile la secunde (int) sau None
     times = {name: [_to_seconds(t) for t in arr] for name, arr in raw_times.items()}
+    # Legacy flag: controls time column display only (no tie-breaking).
     use_time = payload.use_time_tiebreak
 
     def time_for(name: str, idx: int):
@@ -93,11 +94,7 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
             route_list,
             key=lambda x: (
                 -x[1] if x[1] is not None else math.inf,
-                (
-                    x[2]
-                    if (use_time and x[2] is not None)
-                    else (math.inf if use_time else 0)
-                ),
+                x[0].lower(),
             ),
         )
 
@@ -110,9 +107,6 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
                 route_list_sorted[j]
                 for j in range(i, len(route_list_sorted))
                 if route_list_sorted[j][1] == route_list_sorted[i][1]
-                and (
-                    not use_time or (route_list_sorted[j][2] == route_list_sorted[i][2])
-                )
             ]
             first = pos
             last = pos + len(same_score) - 1
@@ -125,16 +119,14 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
         # tie-handling pe Score per rută
         ranks = []
         prev_score = None
-        prev_time = None
         prev_rank = 0
         for idx, (_, score, tm) in enumerate(route_list_sorted, start=1):
-            if score == prev_score and ((not use_time) or tm == prev_time):
+            if score == prev_score:
                 rank = prev_rank
             else:
                 rank = idx
             ranks.append(rank)
             prev_score = score
-            prev_time = tm
             prev_rank = rank
 
         df_route = pd.DataFrame(
@@ -169,6 +161,7 @@ def _build_overall_df(
 
     scores = p.scores
     times = normalized_times if normalized_times is not None else (p.times or {})
+    # Legacy flag: controls time column display only (no tie-breaking).
     use_time = p.use_time_tiebreak
     data = []
     n = p.route_count
@@ -186,16 +179,7 @@ def _build_overall_df(
                     if r < len(t_arr):
                         t_val = t_arr[r]
                     scored.append((nume, sc[r], t_val))
-            scored.sort(
-                key=lambda x: (
-                    -x[1],
-                    (
-                        x[2]
-                        if (use_time and x[2] is not None)
-                        else (math.inf if use_time else 0)
-                    ),
-                )
-            )
+            scored.sort(key=lambda x: (-x[1], x[0].lower()))
 
             i = 0
             pos = 1
@@ -205,7 +189,6 @@ def _build_overall_df(
                 while (
                     i + len(same) < len(scored)
                     and scored[i][1] == scored[i + len(same)][1]
-                    and (not use_time or scored[i + len(same)][2] == current[2])
                 ):
                     same.append(scored[i + len(same)])
                 avg = (pos + pos + len(same) - 1) / 2
@@ -238,7 +221,7 @@ def _build_overall_df(
             cols.append(f"Time R{i+1}")
     cols.append("Total")
     df = pd.DataFrame(data, columns=cols)
-    df.sort_values("Total", inplace=True)
+    df.sort_values(["Total", "Nume"], inplace=True)
     ranks = []
     prev_total = None
     prev_rank = 0

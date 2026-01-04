@@ -163,8 +163,8 @@ class BuildRankingDataTest(unittest.TestCase):
         # Should rank them correctly: Alice(100) -> Charlie(90) -> Bob(80)
         self.assertEqual(df.iloc[0]["Rank"], 1)
 
-    def test_ranking_with_time_tiebreak(self):
-        """Test ranking with time criterion enabled"""
+    def test_ranking_with_time_display_flag(self):
+        """Time values do not break score ties; ordering falls back to name."""
         from escalada.api.save_ranking import _build_overall_df, RankingIn
 
         payload = RankingIn(
@@ -178,6 +178,9 @@ class BuildRankingDataTest(unittest.TestCase):
 
         df = _build_overall_df(payload)
         self.assertIsNotNone(df)
+        self.assertEqual(df.iloc[0]["Rank"], 1)
+        self.assertEqual(df.iloc[1]["Rank"], 1)
+        self.assertEqual(df.iloc[0]["Nume"], "Alice")
 
     def test_ranking_empty_scores(self):
         """Test ranking with empty scores dict"""

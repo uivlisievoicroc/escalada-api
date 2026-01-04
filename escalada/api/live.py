@@ -21,7 +21,6 @@ from escalada_core import (
     apply_command,
     default_state,
     parse_timer_preset,
-    toggle_time_criterion,
     validate_session_and_version,
 )
 from escalada.db.database import AsyncSessionLocal
@@ -39,8 +38,6 @@ logger = logging.getLogger(__name__)
 state_map: Dict[int, dict] = {}
 state_locks: Dict[int, asyncio.Lock] = {}  # Lock per boxId
 init_lock = asyncio.Lock()  # Protects state_map and state_locks initialization
-time_criterion_enabled: bool = False
-time_criterion_lock = asyncio.Lock()  # Global time criterion lock
 current_actor: ContextVar[dict[str, Any] | None] = ContextVar("current_actor", default=None)
 
 
@@ -206,23 +203,6 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
                 state_locks[cmd.boxId] = asyncio.Lock()
             lock = state_locks[cmd.boxId]
 
-        # Toggle global time criterion without touching per‑box state
-        if cmd.type == "SET_TIME_CRITERION":
-            global time_criterion_enabled
-            async with time_criterion_lock:
-                time_criterion_enabled, tc_payload = toggle_time_criterion(
-                    time_criterion_enabled, cmd.timeCriterionEnabled
-                )
-            # Persist an audit event (best-effort; does not affect live behavior)
-            try:
-                await _persist_audit_only(
-                    action="SET_TIME_CRITERION",
-                    payload=tc_payload,
-                )
-            except Exception:
-                pass
-            await _broadcast_time_criterion(tc_payload)
-            return {"status": "ok"}
 
         # Lock state access for this boxId
         async with lock:
@@ -262,9 +242,11 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
             cmd_payload = outcome.cmd_payload
 
             # Persist snapshot + audit log for state-changing commands
-            persist_result = await _persist_state(cmd.boxId, sm, cmd.type, cmd_payload)
-            if persist_result == "stale":
-                return {"status": "ignored", "reason": "stale_version"}
+            persist_result = "ok"
+            if VALIDATION_ENABLED:
+                persist_result = await _persist_state(cmd.boxId, sm, cmd.type, cmd_payload)
+                if persist_result == "stale":
+                    return {"status": "ignored", "reason": "stale_version"}
 
             # Broadcast command echo to all active WebSockets for this box
             await _broadcast_to_box(cmd.boxId, cmd_payload)
@@ -473,7 +455,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "categorie": state.get("categorie", ""),
         "registeredTime": state.get("lastRegisteredTime"),
         "remaining": state.get("remaining"),
-        "timeCriterionEnabled": time_criterion_enabled,
+        "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
         "timerPreset": state.get("timerPreset"),
         "timerPresetSec": state.get("timerPresetSec"),
         "sessionId": state.get("sessionId"),  # Include session ID for client validation
@@ -511,6 +493,13 @@ async def _ensure_state(box_id: int) -> dict:
         existing = state_map.get(box_id)
         if existing is not None:
             return existing
+
+    if not VALIDATION_ENABLED:
+        state = default_state()
+        state["boxVersion"] = 0
+        async with init_lock:
+            state_map[box_id] = state
+        return state
 
     # Try to hydrate from database
     persisted = None
@@ -662,12 +651,3 @@ def _parse_timer_preset(preset: str | None) -> int | None:
     """Backward-compatible alias for tests."""
     return parse_timer_preset(preset)
 
-
-async def _broadcast_time_criterion(payload: dict):
-    for sockets in channels.values():
-        for ws in list(sockets):
-            try:
-                # Preserve UTF-8 diacritics
-                await ws.send_text(json.dumps(payload, ensure_ascii=False))
-            except Exception:
-                sockets.discard(ws)

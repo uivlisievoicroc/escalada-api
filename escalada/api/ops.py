@@ -98,7 +98,6 @@ async def drill_backup_restore(payload: DrillRequest, claims=Depends(require_rol
                 snaps,
                 box_ids=payload.box_ids,
                 hydrate_memory=False,
-                broadcast_time_criterion=False,
                 bump_sequences=False,
             )
             # Ensure all SQL flushes happen inside the SAVEPOINT

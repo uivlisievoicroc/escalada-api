@@ -324,7 +324,16 @@ class TimeCriterionTest(BaseTestCase):
 
     def test_set_time_criterion(self):
         async def scenario():
-            result = await cmd(Cmd(boxId=1, type="SET_TIME_CRITERION", timeCriterionEnabled=True))
+            await cmd(Cmd(boxId=1, type="INIT_ROUTE", routeIndex=1, holdsCount=10, competitors=[{"nume": "Alex"}]))
+            sid = state_map[1]["sessionId"]
+            result = await cmd(
+                Cmd(
+                    boxId=1,
+                    type="SET_TIME_CRITERION",
+                    timeCriterionEnabled=True,
+                    sessionId=sid,
+                )
+            )
             return result
         result = asyncio.run(scenario())
         self.assertEqual(result["status"], "ok")

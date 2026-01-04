@@ -18,18 +18,17 @@ class FetchBoxSnapshotTest(unittest.TestCase):
         from escalada.api import live
 
         live.state_map.clear()
-        live.time_criterion_enabled = False
 
     def test_fetch_box_snapshot_prefers_live_scores_when_db_state_missing(self):
         from escalada.api import live
         from escalada.api.backup import _fetch_box_snapshot
 
         async def scenario():
-            live.time_criterion_enabled = True
             live.state_map[1] = {
                 "categorie": "U13F",
                 "scores": {"Ana": [3.5, 4.0]},
                 "times": {"Ana": [12.34, 11.0]},
+                "timeCriterionEnabled": True,
             }
             with patch(
                 "escalada.api.backup.repos.BoxRepository.get_by_id",

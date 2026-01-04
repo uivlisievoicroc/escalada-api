@@ -57,10 +57,6 @@ async def db_session():
 
 @pytest.mark.asyncio
 async def test_backup_restore_roundtrip_preserves_box_id_and_state(tmp_path, db_session):
-    # Ensure deterministic global time criterion state for this test
-    async with live_module.time_criterion_lock:
-        live_module.time_criterion_enabled = False
-
     comp_repo = CompetitionRepository(db_session)
     box_repo = BoxRepository(db_session)
 
@@ -131,15 +127,17 @@ async def test_backup_restore_roundtrip_preserves_box_id_and_state(tmp_path, db_
     assert restored_box.state.get("lastRegisteredTime") == snap.get("registeredTime")
     assert "registeredTime" not in (restored_box.state or {})
 
+    assert restored_box.state.get("timeCriterionEnabled") is True
+
     # In-memory state should also be hydrated
     async with live_module.init_lock:
         assert live_module.state_map[box.id]["lastRegisteredTime"] == snap.get(
             "registeredTime"
         )
 
-    # Global time criterion should be restored + broadcasted best-effort
-    async with live_module.time_criterion_lock:
-        assert live_module.time_criterion_enabled is True
+    # Per-box time criterion should be restored in memory
+    async with live_module.init_lock:
+        assert live_module.state_map[box.id]["timeCriterionEnabled"] is True
 
     # Sequence bump: creating a new box should not collide with restored IDs
     restored_comp = await comp_repo.get_by_name("Restored Default")

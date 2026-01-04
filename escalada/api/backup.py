@@ -47,7 +47,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
             "categorie": state.get("categorie", ""),
             "registeredTime": state.get("lastRegisteredTime"),
             "remaining": state.get("remaining"),
-            "timeCriterionEnabled": getattr(live, "time_criterion_enabled", False),
+            "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
             "timerPreset": state.get("timerPreset"),
             "timerPresetSec": state.get("timerPresetSec"),
             "sessionId": state.get("sessionId"),
@@ -82,7 +82,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
         "categorie": categorie,
         "registeredTime": state.get("lastRegisteredTime", state_live.get("lastRegisteredTime")),
         "remaining": state.get("remaining", state_live.get("remaining")),
-        "timeCriterionEnabled": getattr(live, "time_criterion_enabled", False),
+        "timeCriterionEnabled": state.get("timeCriterionEnabled", state_live.get("timeCriterionEnabled", False)),
         "timerPreset": state.get("timerPreset", state_live.get("timerPreset")),
         "timerPresetSec": state.get("timerPresetSec", state_live.get("timerPresetSec")),
         "sessionId": box.session_id,
@@ -359,7 +359,6 @@ async def restore_snapshots(
     *,
     box_ids: List[int] | None = None,
     hydrate_memory: bool = True,
-    broadcast_time_criterion: bool = True,
     bump_sequences: bool = True,
 ) -> tuple[list[int], list[dict]]:
     """
@@ -389,8 +388,6 @@ async def restore_snapshots(
         comp = await comp_repo.create(name="Restored Default")
         await session.flush()
 
-    restored_time_criterion = None
-
     for snap in snapshots:
         box_id = snap.get("boxId")
         if box_ids and box_id not in box_ids:
@@ -401,10 +398,6 @@ async def restore_snapshots(
         state = _state_from_backup_snapshot(snap)
         desired_version = state.get("boxVersion", 0) or 0
         desired_session_id = state.get("sessionId")
-
-        # Best-effort: restore global time criterion from snapshots
-        if restored_time_criterion is None and snap.get("timeCriterionEnabled") is not None:
-            restored_time_criterion = bool(snap.get("timeCriterionEnabled"))
 
         box = await box_repo.get_by_id(box_id)
         current_version = box.box_version if box else -1
@@ -454,19 +447,6 @@ async def restore_snapshots(
 
     if restored and bump_sequences:
         await _bump_pk_sequence(session, "boxes", "id")
-
-    if restored_time_criterion is not None and broadcast_time_criterion:
-        try:
-            async with live.time_criterion_lock:
-                live.time_criterion_enabled = bool(restored_time_criterion)
-            await live._broadcast_time_criterion(
-                {
-                    "type": "TIME_CRITERION",
-                    "timeCriterionEnabled": live.time_criterion_enabled,
-                }
-            )
-        except Exception:
-            pass
 
     return restored, conflicts
 
