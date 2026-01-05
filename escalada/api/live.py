@@ -44,6 +44,8 @@ current_actor: ContextVar[dict[str, Any] | None] = ContextVar("current_actor", d
 router = APIRouter()
 channels: dict[int, set[WebSocket]] = {}
 channels_lock = asyncio.Lock()  # Protects concurrent access to channels dict
+public_channels: set[WebSocket] = set()
+public_channels_lock = asyncio.Lock()
 
 # Test mode - disable validation for backward compatibility
 VALIDATION_ENABLED = True
@@ -70,6 +72,14 @@ async def preload_states_from_db() -> int:
             state["boxVersion"] = box.box_version or 0
             if box.session_id:
                 state["sessionId"] = box.session_id
+            if "routesCount" not in state and box.routes_count is not None:
+                state["routesCount"] = box.routes_count
+            if "routeIndex" not in state and box.route_index is not None:
+                state["routeIndex"] = box.route_index
+            if "holdsCount" not in state and box.holds_count is not None:
+                state["holdsCount"] = box.holds_count
+            if "holdsCounts" not in state:
+                state["holdsCounts"] = []
             state_map[box.id] = state
             state_locks[box.id] = state_locks.get(box.id) or asyncio.Lock()
             loaded += 1
@@ -98,6 +108,8 @@ class Cmd(BaseModel):
     # for INIT_ROUTE
     routeIndex: int | None = None
     holdsCount: int | None = None
+    routesCount: int | None = None
+    holdsCounts: list[int] | None = None
     competitors: list[dict] | None = None
     categorie: str | None = None
     timerPreset: str | None = None
@@ -255,6 +267,10 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
             if outcome.snapshot_required:
                 await _send_state_snapshot(cmd.boxId)
 
+            public_update = _public_update_type(cmd.type)
+            if public_update:
+                await _broadcast_public_box_update(cmd.boxId, public_update)
+
         return {"status": "ok"}
     finally:
         try:
@@ -312,6 +328,94 @@ async def _broadcast_to_box(box_id: int, payload: dict) -> None:
         async with channels_lock:
             for ws in dead:
                 channels.get(box_id, set()).discard(ws)
+
+
+def _build_public_box_state(box_id: int, state: dict) -> dict:
+    routes_count = state.get("routesCount")
+    if routes_count is None:
+        routes_count = state.get("routeIndex") or 1
+    holds_counts = state.get("holdsCounts") or []
+    if not isinstance(holds_counts, list):
+        holds_counts = []
+    return {
+        "boxId": box_id,
+        "categorie": state.get("categorie", ""),
+        "initiated": state.get("initiated", False),
+        "routeIndex": state.get("routeIndex", 1),
+        "routesCount": routes_count,
+        "holdsCount": state.get("holdsCount", 0),
+        "holdsCounts": holds_counts,
+        "currentClimber": state.get("currentClimber", ""),
+        "timerState": state.get("timerState", "idle"),
+        "remaining": state.get("remaining"),
+        "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
+        "scoresByName": state.get("scores") or {},
+        "timesByName": state.get("times") or {},
+    }
+
+
+async def _broadcast_public(payload: dict) -> None:
+    async with public_channels_lock:
+        sockets = list(public_channels)
+
+    dead = []
+    for ws in sockets:
+        try:
+            await ws.send_text(json.dumps(payload, ensure_ascii=False))
+        except Exception as e:
+            logger.debug(f"Public broadcast error: {e}")
+            dead.append(ws)
+
+    if dead:
+        async with public_channels_lock:
+            for ws in dead:
+                public_channels.discard(ws)
+
+
+async def _build_public_snapshot_payload() -> dict:
+    async with init_lock:
+        items = list(state_map.items())
+    return {
+        "type": "PUBLIC_STATE_SNAPSHOT",
+        "boxes": [_build_public_box_state(box_id, state) for box_id, state in items],
+    }
+
+
+async def _send_public_snapshot(targets: set[WebSocket] | None = None) -> None:
+    payload = await _build_public_snapshot_payload()
+    if targets:
+        for ws in list(targets):
+            try:
+                await ws.send_text(json.dumps(payload, ensure_ascii=False))
+            except Exception as e:
+                logger.debug(f"Failed to send public snapshot: {e}")
+    else:
+        await _broadcast_public(payload)
+
+
+async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
+    state = state_map.get(box_id)
+    if not state:
+        return
+    payload = {
+        "type": update_type,
+        "box": _build_public_box_state(box_id, state),
+    }
+    await _broadcast_public(payload)
+
+
+def _public_update_type(cmd_type: str) -> str | None:
+    return {
+        "INIT_ROUTE": "BOX_STATUS_UPDATE",
+        "RESET_BOX": "BOX_STATUS_UPDATE",
+        "START_TIMER": "BOX_FLOW_UPDATE",
+        "STOP_TIMER": "BOX_FLOW_UPDATE",
+        "RESUME_TIMER": "BOX_FLOW_UPDATE",
+        "TIMER_SYNC": "BOX_FLOW_UPDATE",
+        "REGISTER_TIME": "BOX_FLOW_UPDATE",
+        "SUBMIT_SCORE": "BOX_RANKING_UPDATE",
+        "SET_TIME_CRITERION": "BOX_RANKING_UPDATE",
+    }.get(cmd_type)
 
 
 def _authorize_ws(box_id: int, claims: dict) -> bool:
@@ -411,6 +515,74 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
             remaining = len(channels.get(box_id, set()))
 
         logger.info(f"Client disconnected from box {box_id}, remaining: {remaining}")
+
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+@router.get("/public/rankings")
+async def public_rankings():
+    return await _build_public_snapshot_payload()
+
+
+@router.websocket("/public/ws")
+async def public_websocket(ws: WebSocket):
+    await ws.accept()
+
+    async with public_channels_lock:
+        public_channels.add(ws)
+
+    await _send_public_snapshot(targets={ws})
+
+    last_pong = {"ts": asyncio.get_event_loop().time()}
+    heartbeat_task = asyncio.create_task(_heartbeat(ws, -1, last_pong))
+
+    try:
+        while True:
+            try:
+                data = await asyncio.wait_for(ws.receive_text(), timeout=180)
+            except asyncio.TimeoutError:
+                logger.warning("Public WebSocket receive timeout")
+                break
+            except Exception as e:
+                logger.warning(f"Public WebSocket receive error: {e}")
+                break
+
+            try:
+                msg = json.loads(data) if isinstance(data, str) else data
+                if isinstance(msg, dict):
+                    msg_type = msg.get("type")
+                    if msg_type == "PONG":
+                        last_pong["ts"] = asyncio.get_event_loop().time()
+                        continue
+                    if msg_type == "PING":
+                        await ws.send_text(
+                            json.dumps(
+                                {"type": "PONG", "timestamp": msg.get("timestamp")},
+                                ensure_ascii=False,
+                            )
+                        )
+                        continue
+                    if msg_type == "REQUEST_STATE":
+                        await _send_public_snapshot(targets={ws})
+                        continue
+            except json.JSONDecodeError:
+                logger.debug("Invalid JSON from public WebSocket")
+                continue
+
+    except Exception as e:
+        logger.error(f"Public WebSocket error: {e}")
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+        async with public_channels_lock:
+            public_channels.discard(ws)
 
         try:
             await ws.close()
@@ -518,6 +690,15 @@ async def _ensure_state(box_id: int) -> dict:
 
     state = default_state(session_id)
     state.update(persisted or {})
+    if box:
+        if "routesCount" not in state and box.routes_count is not None:
+            state["routesCount"] = box.routes_count
+        if "routeIndex" not in state and box.route_index is not None:
+            state["routeIndex"] = box.route_index
+        if "holdsCount" not in state and box.holds_count is not None:
+            state["holdsCount"] = box.holds_count
+    if "holdsCounts" not in state:
+        state["holdsCounts"] = []
     state["boxVersion"] = box_version
     if not state.get("sessionId"):
         state["sessionId"] = state.get("sessionId") or default_state()["sessionId"]
@@ -650,4 +831,3 @@ def _default_state(session_id: str | None = None) -> dict:
 def _parse_timer_preset(preset: str | None) -> int | None:
     """Backward-compatible alias for tests."""
     return parse_timer_preset(preset)
-

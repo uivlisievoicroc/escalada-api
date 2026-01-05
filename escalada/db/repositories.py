@@ -99,6 +99,12 @@ class BoxRepository:
             return (box, False)
 
         box.state = new_state
+        if "routeIndex" in new_state and new_state.get("routeIndex") is not None:
+            box.route_index = int(new_state.get("routeIndex") or box.route_index)
+        if "routesCount" in new_state and new_state.get("routesCount") is not None:
+            box.routes_count = int(new_state.get("routesCount") or box.routes_count)
+        if "holdsCount" in new_state and new_state.get("holdsCount") is not None:
+            box.holds_count = int(new_state.get("holdsCount") or box.holds_count)
         box.box_version = current_version + 1
         if new_session_id:
             box.session_id = new_session_id
