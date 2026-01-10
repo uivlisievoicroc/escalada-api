@@ -11,6 +11,8 @@ from escalada.auth.deps import require_role
 from escalada.db.database import AsyncSessionLocal
 from escalada.db.health import health_check_db
 from escalada.db.models import Box, Competition, Event
+from escalada.storage.json_store import is_json_mode
+from escalada.api import live
 
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -36,6 +38,24 @@ async def ops_status(claims=Depends(require_role(["admin"]))):
     age_sec = (
         (datetime.now(timezone.utc) - last_mtime).total_seconds() if last_mtime else None
     )
+
+    if is_json_mode():
+        return {
+            "serverTimeUtc": datetime.now(timezone.utc).isoformat(),
+            "db": {"status": "disabled", "storage": "json"},
+            "counts": {
+                "competitions": 0,
+                "boxes": len(live.state_map),
+                "events": 0,
+                "lastEventAt": None,
+            },
+            "backup": {
+                "dir": str(backup_dir),
+                "lastFile": last.name if last else None,
+                "lastTimestampUtc": last_mtime.isoformat() if last_mtime else None,
+                "ageSeconds": age_sec,
+            },
+        }
 
     async with AsyncSessionLocal() as session:
         db_health = await health_check_db(session)
@@ -68,8 +88,11 @@ async def backup_now(claims=Depends(require_role(["admin"]))):
     Force a backup write to disk (same format as periodic backups).
     """
     backup_dir = Path(os.getenv("BACKUP_DIR", "backups"))
-    async with AsyncSessionLocal() as session:
-        snaps = await collect_snapshots(session)
+    if is_json_mode():
+        snaps = await collect_snapshots(None)
+    else:
+        async with AsyncSessionLocal() as session:
+            snaps = await collect_snapshots(session)
     path = await write_backup_file(backup_dir, snaps)
     return {"status": "ok", "filename": path.name, "snapshots": len(snaps)}
 
@@ -82,6 +105,8 @@ async def drill_backup_restore(payload: DrillRequest, claims=Depends(require_rol
       - optionally write backup file to disk
       - run restore logic in a SAVEPOINT and rollback (no DB changes, no in-memory changes)
     """
+    if is_json_mode():
+        raise HTTPException(status_code=501, detail="backup_drill_not_supported_json")
     backup_dir = Path(os.getenv("BACKUP_DIR", "backups"))
     async with AsyncSessionLocal() as session:
         snaps = await collect_snapshots(session)
@@ -121,4 +146,3 @@ async def drill_backup_restore(payload: DrillRequest, claims=Depends(require_rol
         "restored": len(restored),
         "backupFile": backup_filename,
     }
-

@@ -3,15 +3,16 @@
 Document scurt pentru “ziua de concurs”: pornire, verificări, backup, recovery, export oficial, audit.
 
 ## 0) Prerechizite
-- Postgres pornit și accesibil prin `DATABASE_URL` (sau `TEST_DATABASE_URL`)
+- Postgres pornit și accesibil prin `DATABASE_URL` (sau `TEST_DATABASE_URL`) cand `STORAGE_MODE=postgres`
+- Sau: `STORAGE_MODE=json` + `STORAGE_DIR=./data` (fara Postgres) + ruleaza un singur worker: `uvicorn ... --workers 1`
 - `BACKUP_DIR` (opțional) — folder local unde se scriu backup-urile JSON (default: `backups`)
 - UI pornește separat (repo `escalada-ui`) și comunică doar prin API
 
 ## 1) Pornire (start of day)
-1. Pornește DB (ex: Docker) și verifică port/cred.
-2. Pornește API (`uvicorn escalada.main:app ...`).
+1. Daca `STORAGE_MODE=postgres`: pornește DB (ex: Docker) și verifică port/cred.
+2. Pornește API (`uvicorn escalada.main:app ...`, in JSON mode cu `--workers 1`).
 3. Verifică:
-   - `GET /health`
+   - `GET /health` (in JSON mode raspunde cu `storage=json`)
    - `GET /api/admin/ops/status` (admin)
 
 ## 2) În timpul concursului (operare)

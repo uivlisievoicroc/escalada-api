@@ -1,0 +1,11 @@
+{
+  "admin": {
+    "username": "admin",
+    "password_hash": "$pbkdf2-sha256$29000$I8TYW8uZU4pxjvGe875Xqg$3A6Dp0.ssXa9U1xqXrOHlV1TYG9ygW4R0YBAs4qH5Vs",
+    "role": "admin",
+    "assigned_boxes": [],
+    "is_active": true,
+    "created_at": "2026-01-07T20:36:21.088925+00:00",
+    "updated_at": "2026-01-07T20:36:21.088925+00:00"
+  }
+}

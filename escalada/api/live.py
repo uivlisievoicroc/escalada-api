@@ -32,6 +32,14 @@ from escalada.auth.deps import (
     require_view_box_access,
 )
 from escalada.auth.service import decode_token
+from escalada.storage.json_store import (
+    append_audit_event,
+    build_audit_event,
+    ensure_storage_dirs,
+    is_json_mode,
+    load_box_states,
+    save_box_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +95,26 @@ async def preload_states_from_db() -> int:
     if loaded:
         logger.info(f"Preloaded {loaded} box states from DB")
     return loaded
+
+
+async def preload_states_from_json() -> int:
+    ensure_storage_dirs()
+    states = load_box_states()
+    loaded = 0
+    async with init_lock:
+        for box_id, state in states.items():
+            state_map[box_id] = state
+            state_locks[box_id] = state_locks.get(box_id) or asyncio.Lock()
+            loaded += 1
+    if loaded:
+        logger.info(f"Preloaded {loaded} box states from JSON")
+    return loaded
+
+
+async def preload_states() -> int:
+    if is_json_mode():
+        return await preload_states_from_json()
+    return await preload_states_from_db()
 
 
 class Cmd(BaseModel):
@@ -619,6 +647,8 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "initiated": state.get("initiated", False),
         "holdsCount": state.get("holdsCount", 0),
         "routeIndex": state.get("routeIndex", 1),
+        "routesCount": state.get("routesCount"),
+        "holdsCounts": state.get("holdsCounts"),
         "currentClimber": state.get("currentClimber", ""),
         "started": state.get("started", False),
         "timerState": state.get("timerState", "idle"),
@@ -661,6 +691,17 @@ async def _send_state_snapshot(box_id: int, targets: set[WebSocket] | None = Non
 
 async def _ensure_state(box_id: int) -> dict:
     """Ensure in-memory state exists, hydrated from DB when possible."""
+    if is_json_mode():
+        async with init_lock:
+            existing = state_map.get(box_id)
+            if existing is not None:
+                return existing
+            if box_id not in state_locks:
+                state_locks[box_id] = asyncio.Lock()
+            state = default_state()
+            state_map[box_id] = state
+            return state
+
     async with init_lock:
         existing = state_map.get(box_id)
         if existing is not None:
@@ -713,6 +754,20 @@ async def _persist_state(box_id: int, state: dict, action: str, payload: dict) -
     Persist snapshot + audit event.
     Returns: "ok", "stale", "missing_box", or "error".
     """
+    if is_json_mode():
+        if action != "INIT_ROUTE":
+            state["boxVersion"] = int(state.get("boxVersion", 0) or 0) + 1
+        await save_box_state(box_id, state)
+        event = build_audit_event(
+            action=action,
+            payload=payload,
+            box_id=box_id,
+            state=state,
+            actor=current_actor.get(),
+        )
+        await append_audit_event(event)
+        return "ok"
+
     try:
         async with AsyncSessionLocal() as session:
             box_repo = repos.BoxRepository(session)
@@ -798,6 +853,18 @@ async def _persist_state(box_id: int, state: dict, action: str, payload: dict) -
 
 async def _persist_audit_only(action: str, payload: dict) -> None:
     """Persist an audit event that doesn't mutate box state (best-effort)."""
+    if is_json_mode():
+        box_id = payload.get("boxId") if isinstance(payload, dict) else None
+        event = build_audit_event(
+            action=action,
+            payload=payload if isinstance(payload, dict) else {},
+            box_id=box_id,
+            state=state_map.get(box_id) if box_id is not None else None,
+            actor=current_actor.get(),
+        )
+        await append_audit_event(event)
+        return
+
     async with AsyncSessionLocal() as session:
         comp_repo = repos.CompetitionRepository(session)
         event_repo = repos.EventRepository(session)

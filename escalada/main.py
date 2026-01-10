@@ -19,6 +19,7 @@ from escalada.api.audit import router as audit_router
 from escalada.api.ops import router as ops_router
 from escalada.api.save_ranking import router as save_ranking_router
 from escalada.api import live as live_module
+from escalada.storage.json_store import is_json_mode
 from escalada.db.database import get_session
 from escalada.db.health import health_check_db
 from escalada.db.models import Box, Competition, Event
@@ -49,12 +50,15 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events for the FastAPI application"""
     # Startup logic
     logger.info("🚀 Escalada API starting up...")
+    if not is_json_mode():
+        try:
+            await run_migrations()
+        except Exception as e:
+            logger.error(f"Auto-migration failed: {e}", exc_info=True)
+    else:
+        logger.info("JSON storage mode: skipping migrations.")
     try:
-        await run_migrations()
-    except Exception as e:
-        logger.error(f"Auto-migration failed: {e}", exc_info=True)
-    try:
-        await live_module.preload_states_from_db()
+        await live_module.preload_states()
     except Exception as e:
         logger.warning(f"State preload skipped: {e}")
     # Start periodic backup task
@@ -80,7 +84,10 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Periodic backup failed: {e}", exc_info=True)
 
     global backup_task
-    backup_task = asyncio.create_task(_backup_loop())
+    if not is_json_mode():
+        backup_task = asyncio.create_task(_backup_loop())
+    else:
+        backup_task = None
     yield
     # Shutdown logic
     logger.info("🛑 Escalada API shutting down...")
@@ -147,12 +154,22 @@ async def log_requests(request, call_next):
 @app.get("/health")
 async def health(session: AsyncSession = Depends(get_session)):
     """Health check endpoint with database connectivity."""
+    if is_json_mode():
+        return {"status": "ok", "storage": "json"}
     return await health_check_db(session)
 
 
 @app.get("/status/summary")
 async def status_summary(session: AsyncSession = Depends(get_session)):
     """Lightweight counts to confirm persistence is working."""
+    if is_json_mode():
+        return {
+            "competitions": 0,
+            "boxes": len(live_module.state_map),
+            "events": 0,
+            "last_event_at": None,
+            "storage": "json",
+        }
     comps_count = await session.scalar(select(func.count(Competition.id)))
     boxes_count = await session.scalar(select(func.count(Box.id)))
     events_count = await session.scalar(select(func.count(Event.id)))

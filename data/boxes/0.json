@@ -1,0 +1,70 @@
+{
+  "initiated": true,
+  "holdsCount": 11,
+  "currentClimber": "Eric Crișan",
+  "started": true,
+  "timerState": "running",
+  "holdCount": 5,
+  "routeIndex": 1,
+  "routesCount": 1,
+  "holdsCounts": [
+    11
+  ],
+  "competitors": [
+    {
+      "nume": "Eric Crișan",
+      "marked": false
+    },
+    {
+      "nume": "Ianc Andrei",
+      "marked": false
+    },
+    {
+      "nume": "Ştiubea Vlad",
+      "marked": false
+    },
+    {
+      "nume": "Cinca Albert",
+      "marked": false
+    },
+    {
+      "nume": "Scutelnicu Ilie Nicolas",
+      "marked": false
+    },
+    {
+      "nume": "Căpățână Arno",
+      "marked": false
+    },
+    {
+      "nume": "Gyurka Erik",
+      "marked": false
+    },
+    {
+      "nume": "Tarcea Tudor",
+      "marked": false
+    }
+  ],
+  "categorie": "",
+  "lastRegisteredTime": null,
+  "remaining": null,
+  "timerPreset": "05:00",
+  "timerPresetSec": 300,
+  "timeCriterionEnabled": false,
+  "sessionId": "210bfe77-fdd8-4efd-a08f-ace49f6a8f2b",
+  "boxVersion": 10,
+  "scores": {
+    "Cireap Paul": [
+      1.0
+    ],
+    "Ghiurka Éva": [
+      4.0
+    ],
+    "Eric Crișan": [
+      3.0
+    ],
+    "Ianc Andrei": [
+      9.0
+    ]
+  },
+  "times": {}
+}

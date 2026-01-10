@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import io
 import json
@@ -20,42 +21,94 @@ from escalada.db.database import AsyncSessionLocal
 from escalada.db import repositories as repos
 from escalada.db.models import Box
 from escalada.api.save_ranking import _build_overall_df, _format_time
+from escalada.storage.json_store import is_json_mode, save_box_state
 
 router = APIRouter()
 
 
+def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
+    scores = state.get("scores", {})
+    times = state.get("times", {})
+    snapshot = {
+        "boxId": box_id,
+        "competitionId": None,
+        "initiated": state.get("initiated", False),
+        "holdsCount": state.get("holdsCount", 0),
+        "holdsCounts": state.get("holdsCounts") or [],
+        "routeIndex": state.get("routeIndex", 1),
+        "routesCount": state.get("routesCount") or state.get("routes_count"),
+        "currentClimber": state.get("currentClimber", ""),
+        "started": state.get("started", False),
+        "timerState": state.get("timerState", "idle"),
+        "holdCount": state.get("holdCount", 0.0),
+        "competitors": state.get("competitors", []),
+        "categorie": state.get("categorie", ""),
+        "registeredTime": state.get("lastRegisteredTime"),
+        "remaining": state.get("remaining"),
+        "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
+        "timerPreset": state.get("timerPreset"),
+        "timerPresetSec": state.get("timerPresetSec"),
+        "sessionId": state.get("sessionId"),
+        "boxVersion": state.get("boxVersion", 0),
+        "competitorsAll": [],
+        "scores": scores,
+        "times": times,
+    }
+    if not snapshot.get("routesCount"):
+        snapshot["routesCount"] = state.get("routeIndex") or 1
+    if not snapshot.get("competitorsAll"):
+        comps_state = state.get("competitors") or []
+        for idx, comp in enumerate(comps_state):
+            if not isinstance(comp, dict):
+                continue
+            snapshot["competitorsAll"].append(
+                {
+                    "id": None,
+                    "name": comp.get("nume") or comp.get("name") or f"comp_{idx}",
+                    "category": comp.get("categorie") or comp.get("category"),
+                    "bib": comp.get("bib"),
+                    "boxId": box_id,
+                }
+            )
+
+    try:
+        route_count = snapshot.get("routesCount") or 0
+        if scores and route_count:
+            df_overall = _build_overall_df(
+                type(
+                    "Payload",
+                    (),
+                    {
+                        "scores": scores,
+                        "route_count": route_count,
+                        "clubs": {},
+                        "include_clubs": False,
+                        "times": times,
+                        "use_time_tiebreak": bool(snapshot.get("timeCriterionEnabled")),
+                    },
+                ),
+                times,
+            )
+            snapshot["ranking"] = df_overall.to_dict(orient="records")
+        else:
+            snapshot["ranking"] = []
+    except Exception:
+        snapshot["ranking"] = []
+
+    return snapshot
+
+
 async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
+    if is_json_mode() or session is None:
+        state = live.state_map.get(box_id) or live._default_state()
+        return _snapshot_from_state(box_id, state)
+
     box_repo = repos.BoxRepository(session)
     box = await box_repo.get_by_id(box_id)
     if not box:
         # fallback pe state-ul din memorie
         state = live.state_map.get(box_id) or live._default_state()
-        scores = state.get("scores", {})
-        times = state.get("times", {})
-        return {
-            "boxId": box_id,
-            "competitionId": None,
-            "initiated": state.get("initiated", False),
-            "holdsCount": state.get("holdsCount", 0),
-            "routeIndex": state.get("routeIndex", 1),
-            "routesCount": state.get("routesCount") or state.get("routes_count"),
-            "currentClimber": state.get("currentClimber", ""),
-            "started": state.get("started", False),
-            "timerState": state.get("timerState", "idle"),
-            "holdCount": state.get("holdCount", 0.0),
-            "competitors": state.get("competitors", []),
-            "categorie": state.get("categorie", ""),
-            "registeredTime": state.get("lastRegisteredTime"),
-            "remaining": state.get("remaining"),
-            "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
-            "timerPreset": state.get("timerPreset"),
-            "timerPresetSec": state.get("timerPresetSec"),
-            "sessionId": state.get("sessionId"),
-            "boxVersion": state.get("boxVersion", 0),
-            "competitorsAll": [],
-            "scores": scores,
-            "times": times,
-        }
+        return _snapshot_from_state(box_id, state)
 
     # Build snapshot similar to /api/state
     state_db = box.state or {}
@@ -72,6 +125,7 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
         "competitionId": box.competition_id,
         "initiated": state.get("initiated", state_live.get("initiated", False)),
         "holdsCount": state.get("holdsCount", state_live.get("holdsCount", 0)),
+        "holdsCounts": state.get("holdsCounts", state_live.get("holdsCounts", [])),
         "routeIndex": state.get("routeIndex", state_live.get("routeIndex", 1)),
         "routesCount": box.routes_count,
         "currentClimber": state.get("currentClimber", state_live.get("currentClimber", "")),
@@ -157,6 +211,11 @@ async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
 @router.get("/backup/box/{box_id}")
 async def backup_box(box_id: int, claims=Depends(require_role(["admin"]))):
     """Return JSON snapshot for a single box."""
+    if is_json_mode():
+        snap = await _fetch_box_snapshot(None, box_id)
+        if not snap:
+            raise HTTPException(status_code=404, detail="box_not_found")
+        return {"status": "ok", "snapshot": snap}
     async with AsyncSessionLocal() as session:
         snap = await _fetch_box_snapshot(session, box_id)
         if not snap:
@@ -167,6 +226,9 @@ async def backup_box(box_id: int, claims=Depends(require_role(["admin"]))):
 @router.get("/backup/full")
 async def backup_full(claims=Depends(require_role(["admin"]))):
     """Return JSON snapshots for all boxes across competitions."""
+    if is_json_mode():
+        snapshots = await collect_snapshots(None)
+        return {"status": "ok", "snapshots": snapshots}
     async with AsyncSessionLocal() as session:
         snapshots = await collect_snapshots(session)
         return {"status": "ok", "snapshots": snapshots}
@@ -194,90 +256,97 @@ async def backup_last(download: bool = False, claims=Depends(require_role(["admi
 @router.get("/export/box/{box_id}")
 async def export_box_csv(box_id: int, claims=Depends(require_role(["admin"]))):
     """Export current state to CSV (lightweight per-box export)."""
-    async with AsyncSessionLocal() as session:
-        snap = await _fetch_box_snapshot(session, box_id)
-        if not snap:
-            raise HTTPException(status_code=404, detail="box_not_found")
+    if is_json_mode():
+        snap = await _fetch_box_snapshot(None, box_id)
+    else:
+        async with AsyncSessionLocal() as session:
+            snap = await _fetch_box_snapshot(session, box_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="box_not_found")
 
-        output = io.StringIO()
-        writer = csv.writer(output)
+    output = io.StringIO()
+    writer = csv.writer(output)
 
-        writer.writerow(["boxId", snap["boxId"]])
-        writer.writerow(["competitionId", snap["competitionId"]])
-        writer.writerow(["categorie", snap.get("categorie", "")])
-        writer.writerow(["boxVersion", snap.get("boxVersion", 0)])
+    writer.writerow(["boxId", snap["boxId"]])
+    writer.writerow(["competitionId", snap["competitionId"]])
+    writer.writerow(["categorie", snap.get("categorie", "")])
+    writer.writerow(["boxVersion", snap.get("boxVersion", 0)])
+    writer.writerow([])
+
+    writer.writerow(["Current state"])
+    writer.writerow(["holdCount", snap.get("holdCount", 0)])
+    writer.writerow(["started", snap.get("started", False)])
+    writer.writerow(["timerState", snap.get("timerState", "idle")])
+    writer.writerow(["currentClimber", snap.get("currentClimber", "")])
+    writer.writerow(["remaining", snap.get("remaining")])
+    writer.writerow([])
+
+    writer.writerow(["Competitors (all)"])
+    writer.writerow(["id", "name", "category", "bib", "boxId"])
+    for c in snap.get("competitorsAll", []):
+        writer.writerow([
+            c.get("id"),
+            c.get("name"),
+            c.get("category"),
+            c.get("bib"),
+            c.get("boxId"),
+        ])
+
+    # Scores per competitor (if available)
+    scores = snap.get("scores") or {}
+    times = snap.get("times") or {}
+    if scores:
         writer.writerow([])
-
-        writer.writerow(["Current state"])
-        writer.writerow(["holdCount", snap.get("holdCount", 0)])
-        writer.writerow(["started", snap.get("started", False)])
-        writer.writerow(["timerState", snap.get("timerState", "idle")])
-        writer.writerow(["currentClimber", snap.get("currentClimber", "")])
-        writer.writerow(["remaining", snap.get("remaining")])
-        writer.writerow([])
-
-        writer.writerow(["Competitors (all)"])
-        writer.writerow(["id", "name", "category", "bib", "boxId"])
-        for c in snap.get("competitorsAll", []):
-            writer.writerow([
-                c.get("id"),
-                c.get("name"),
-                c.get("category"),
-                c.get("bib"),
-                c.get("boxId"),
-            ])
-
-        # Scores per competitor (if available)
-        scores = snap.get("scores") or {}
-        times = snap.get("times") or {}
-        if scores:
-            writer.writerow([])
-            writer.writerow(["Scores (per competitor)"])
-            max_routes = max((len(v or []) for v in scores.values()), default=0)
-            headers = ["Name"] + [f"Route {i+1}" for i in range(max_routes)]
-            use_time = bool(snap.get("timeCriterionEnabled"))
+        writer.writerow(["Scores (per competitor)"])
+        max_routes = max((len(v or []) for v in scores.values()), default=0)
+        headers = ["Name"] + [f"Route {i+1}" for i in range(max_routes)]
+        use_time = bool(snap.get("timeCriterionEnabled"))
+        if use_time:
+            for i in range(max_routes):
+                headers.append(f"Time {i+1}")
+        writer.writerow(headers)
+        for name, arr in scores.items():
+            row = [name]
+            arr = arr or []
+            for i in range(max_routes):
+                row.append(arr[i] if i < len(arr) else "")
             if use_time:
+                t_arr = times.get(name, [])
                 for i in range(max_routes):
-                    headers.append(f"Time {i+1}")
-            writer.writerow(headers)
-            for name, arr in scores.items():
-                row = [name]
-                arr = arr or []
-                for i in range(max_routes):
-                    row.append(arr[i] if i < len(arr) else "")
-                if use_time:
-                    t_arr = times.get(name, [])
-                    for i in range(max_routes):
-                        row.append(_format_time(t_arr[i]) if i < len(t_arr) else "")
-                writer.writerow(row)
+                    row.append(_format_time(t_arr[i]) if i < len(t_arr) else "")
+            writer.writerow(row)
 
-        # Ranking section if available
-        ranking = snap.get("ranking") or []
-        if ranking:
-            writer.writerow([])
-            writer.writerow(["Ranking (overall)"])
-            headers = ranking[0].keys()
-            writer.writerow(headers)
-            for row in ranking:
-                writer.writerow([row.get(h, "") for h in headers])
+    # Ranking section if available
+    ranking = snap.get("ranking") or []
+    if ranking:
+        writer.writerow([])
+        writer.writerow(["Ranking (overall)"])
+        headers = ranking[0].keys()
+        writer.writerow(headers)
+        for row in ranking:
+            writer.writerow([row.get(h, "") for h in headers])
 
-        csv_bytes = output.getvalue().encode("utf-8")
-        return Response(
-            content=csv_bytes,
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=box_{box_id}_export.csv"
-            },
-        )
-
+    csv_bytes = output.getvalue().encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=box_{box_id}_export.csv"
+        },
+    )
 
 @router.get("/export/official/box/{box_id}")
 async def export_official_results_zip(box_id: int, claims=Depends(require_role(["admin"]))):
     """Export "official" results bundle (ZIP with XLSX+PDF) for a box."""
-    async with AsyncSessionLocal() as session:
-        snap = await _fetch_box_snapshot(session, box_id)
+    if is_json_mode():
+        snap = await _fetch_box_snapshot(None, box_id)
         if not snap:
             raise HTTPException(status_code=404, detail="box_not_found")
+    else:
+        async with AsyncSessionLocal() as session:
+            snap = await _fetch_box_snapshot(session, box_id)
+            if not snap:
+                raise HTTPException(status_code=404, detail="box_not_found")
 
     try:
         zip_bytes = build_official_results_zip(snap)
@@ -313,6 +382,8 @@ def _state_from_backup_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "initiated": bool(snapshot.get("initiated", False)),
             "holdsCount": snapshot.get("holdsCount", 0) or 0,
             "routeIndex": snapshot.get("routeIndex", 1) or 1,
+            "routesCount": snapshot.get("routesCount") or snapshot.get("routes_count") or 1,
+            "holdsCounts": snapshot.get("holdsCounts") or [],
             "currentClimber": snapshot.get("currentClimber", "") or "",
             "started": bool(snapshot.get("started", False)),
             "timerState": snapshot.get("timerState", "idle") or "idle",
@@ -451,12 +522,39 @@ async def restore_snapshots(
     return restored, conflicts
 
 
+async def restore_snapshots_json(
+    snapshots: List[Dict[str, Any]],
+    *,
+    box_ids: List[int] | None = None,
+) -> list[int]:
+    restored: list[int] = []
+    for snap in snapshots:
+        box_id = snap.get("boxId")
+        if box_id is None:
+            continue
+        if box_ids and box_id not in box_ids:
+            continue
+        state = _state_from_backup_snapshot(snap)
+        async with live.init_lock:
+            live.state_map[int(box_id)] = state
+            live.state_locks[int(box_id)] = live.state_locks.get(int(box_id)) or asyncio.Lock()
+        await save_box_state(int(box_id), state)
+        restored.append(int(box_id))
+    return restored
+
+
 @router.post("/restore")
 async def restore_backup(payload: RestoreRequest, claims=Depends(require_role(["admin"]))):
     """
     Restore snapshots. Policy: accept if incoming boxVersion > current OR same version with matching sessionId.
     Otherwise raise conflict.
     """
+    if is_json_mode():
+        restored = await restore_snapshots_json(
+            payload.snapshots,
+            box_ids=payload.box_ids,
+        )
+        return {"status": "ok", "restored": restored}
     async with AsyncSessionLocal() as session:
         restored, conflicts = await restore_snapshots(
             session,
@@ -475,10 +573,17 @@ async def restore_backup(payload: RestoreRequest, claims=Depends(require_role(["
 
 async def collect_snapshots(session) -> List[Dict[str, Any]]:
     """Collect snapshots for all boxes from DB + in-memory."""
+    if is_json_mode():
+        snapshots: List[Dict[str, Any]] = []
+        for box_id, state in live.state_map.items():
+            snap = _snapshot_from_state(int(box_id), state)
+            snapshots.append(snap)
+        return snapshots
+
     box_repo = repos.BoxRepository(session)
     comp_repo = repos.CompetitionRepository(session)
     competitions = await comp_repo.list_all()
-    snapshots: List[Dict[str, Any]] = []
+    snapshots = []
     for comp in competitions:
         boxes = await box_repo.list_by_competition(comp.id)
         for box in boxes:

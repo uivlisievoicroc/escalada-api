@@ -11,6 +11,16 @@ poetry run pip install -e ../escalada-core
 poetry run uvicorn escalada.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## JSON storage mode (no Postgres)
+
+Set `STORAGE_MODE=json` (optional `STORAGE_DIR=./data`) and run a single worker:
+
+```bash
+export STORAGE_MODE=json
+export STORAGE_DIR=./data
+poetry run uvicorn escalada.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
 ## Tests
 
 ```bash

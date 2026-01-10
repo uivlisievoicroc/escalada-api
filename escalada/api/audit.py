@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from escalada.auth.deps import require_role
+from escalada.storage.json_store import is_json_mode, read_latest_events
 from escalada.db.database import get_session
 from escalada.db.models import Event
 
@@ -42,6 +43,30 @@ async def list_audit_events(
     Admin-only audit log stream (most recent first).
     Use for post-mortem debugging: who sent what command, when, for which box.
     """
+    if is_json_mode():
+        events = read_latest_events(
+            limit=limit,
+            include_payload=include_payload,
+            box_id=box_id,
+        )
+        return [
+            AuditEventOut(
+                id=str(ev.get("id", "")),
+                createdAt=str(ev.get("createdAt", "")),
+                competitionId=int(ev.get("competitionId", 0) or 0),
+                boxId=ev.get("boxId"),
+                action=str(ev.get("action", "")),
+                actionId=ev.get("actionId"),
+                boxVersion=int(ev.get("boxVersion", 0) or 0),
+                sessionId=ev.get("sessionId"),
+                actorUsername=ev.get("actorUsername"),
+                actorRole=ev.get("actorRole"),
+                actorIp=ev.get("actorIp"),
+                actorUserAgent=ev.get("actorUserAgent"),
+                payload=ev.get("payload") if include_payload else None,
+            )
+            for ev in events
+        ]
     query = select(Event).order_by(Event.created_at.desc()).limit(limit)
     if box_id is not None:
         query = query.where(Event.box_id == box_id)
@@ -74,4 +99,3 @@ async def list_audit_events(
             )
         )
     return out
-
