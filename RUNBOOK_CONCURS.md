@@ -1,56 +1,25 @@
-# Runbook — Operare concurs (Escalada)
+# RUNBOOK (ziua concursului)
 
-Document scurt pentru “ziua de concurs”: pornire, verificări, backup, recovery, export oficial, audit.
+## Cerințe
 
-## 0) Prerechizite
-- Postgres pornit și accesibil prin `DATABASE_URL` (sau `TEST_DATABASE_URL`) cand `STORAGE_MODE=postgres`
-- Sau: `STORAGE_MODE=json` + `STORAGE_DIR=./data` (fara Postgres) + ruleaza un singur worker: `uvicorn ... --workers 1`
-- `BACKUP_DIR` (opțional) — folder local unde se scriu backup-urile JSON (default: `backups`)
-- UI pornește separat (repo `escalada-ui`) și comunică doar prin API
+- API rulează în **JSON storage mode** (fără Postgres/Docker)
+- Rulează un singur worker: `uvicorn ... --workers 1`
 
-## 1) Pornire (start of day)
-1. Daca `STORAGE_MODE=postgres`: pornește DB (ex: Docker) și verifică port/cred.
-2. Pornește API (`uvicorn escalada.main:app ...`, in JSON mode cu `--workers 1`).
-3. Verifică:
-   - `GET /health` (in JSON mode raspunde cu `storage=json`)
-   - `GET /api/admin/ops/status` (admin)
+## Setup rapid
 
-## 2) În timpul concursului (operare)
-- Comenzile de live vin pe WS/HTTP din UI.
-- Persistența stării se face în DB la fiecare comandă; la restart se reîncarcă automat din DB.
+```bash
+export STORAGE_DIR=./data
+export BACKUP_DIR=./backups
+poetry run uvicorn escalada.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
 
-## 3) Backup (manual + automat)
-### Automat
-- API scrie periodic backup JSON (interval din `BACKUP_INTERVAL_MIN`, folder `BACKUP_DIR`).
+## Verificări
 
-### Manual (recomandat înainte de final / la pauze)
-- `POST /api/admin/ops/backup/now` (admin) → scrie un backup JSON în `BACKUP_DIR`.
-- `GET /api/admin/backup/last?download=true` (admin) → descarcă ultimul backup JSON.
+- Health: `GET /health`
+- Ops status: `GET /api/admin/ops/status`
+- Backup manual: `POST /api/admin/ops/backup/now`
 
-## 4) Drill de failover (non-destructiv)
-Scop: confirmă că snapshot-urile curente “se pot restaura” logic, fără să schimbe DB sau memoria live.
-- `POST /api/admin/ops/drill/backup_restore` (admin)
-  - opțional body: `{ "box_ids": [1,2], "write_backup_file": true }`
-  - returnează câte snapshot-uri/restaurări ar reuși; pe conflict dă `409`.
+## Backup & restore
 
-## 5) Recovery (după restart / incident)
-### Restart normal (cel mai comun)
-- API la startup rulează migrații și `preload_states_from_db()`; concursul revine din DB.
-
-### Restore manual din backup JSON
-1. Ia backup-ul (ex: din `GET /api/admin/backup/last?download=true`).
-2. Trimite conținutul în:
-   - `POST /api/admin/restore` cu `{ "snapshots": [...] }`
-3. Verifică UI că state-ul e coerent pe box-urile afectate.
-
-## 6) Export rezultate oficiale (ZIP)
-Per box:
-- `GET /api/admin/export/official/box/{box_id}` (admin) → descarcă ZIP cu:
-  - `overall.xlsx` + `overall.pdf`
-  - `route_N.xlsx` + `route_N.pdf`
-  - `metadata.json`
-
-## 7) Audit log (cine/ce/când)
-- `GET /api/admin/audit/events?boxId=&limit=&includePayload=` (admin)
-- Audit include: `action_id`, user/role (din JWT), IP + user-agent (din request).
-
+- Backup (all): `GET /api/admin/backup/full`
+- Restore: `POST /api/admin/restore` (cu payload `{"snapshots":[...]}`)

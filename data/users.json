@@ -7,5 +7,93 @@
     "is_active": true,
     "created_at": "2026-01-07T20:36:21.088925+00:00",
     "updated_at": "2026-01-07T20:36:21.088925+00:00"
+  },
+  "1": {
+    "username": "1",
+    "password_hash": "$pbkdf2-sha256$29000$hrD2HgNA6P3/P.d8r/WeMw$FHH/2P340zl6V7UrgwPfKv3HN4yBjuTXjEyLEBeAAjU",
+    "role": "judge",
+    "assigned_boxes": [
+      1
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T19:07:55.039383+00:00"
+  },
+  "Box 0": {
+    "username": "Box 0",
+    "password_hash": "$pbkdf2-sha256$29000$9f6/t1ZqLYWQ0tp7TwkBoA$6.lBAm3wnH7j1DHXK8Jj..sAKXhZdSMBFC1JAjXK6/E",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T19:07:40.187319+00:00"
+  },
+  "0": {
+    "username": "0",
+    "password_hash": "$pbkdf2-sha256$29000$9f6/t1ZqLYWQ0tp7TwkBoA$6.lBAm3wnH7j1DHXK8Jj..sAKXhZdSMBFC1JAjXK6/E",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T19:07:40.187319+00:00"
+  },
+  "12": {
+    "username": "12",
+    "password_hash": "$pbkdf2-sha256$29000$5bzX.j9HKOX8v/f./783hg$.w0Ps2e0vE5q7H3HWnJxEgrmNkk/xX6h4zZYWVNJwm4",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T13:14:54.285648+00:00"
+  },
+  "qwerty": {
+    "username": "qwerty",
+    "password_hash": "$pbkdf2-sha256$29000$AGAs5VzrXUvJuXfO.d9bKw$ovJDVWrIOecY/tNgqIRSOa8wWipH2haOu0PJoRt4uP4",
+    "role": "judge",
+    "assigned_boxes": [
+      1
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T13:15:45.236431+00:00"
+  },
+  "Box 1": {
+    "username": "Box 1",
+    "password_hash": "$pbkdf2-sha256$29000$hrD2HgNA6P3/P.d8r/WeMw$FHH/2P340zl6V7UrgwPfKv3HN4yBjuTXjEyLEBeAAjU",
+    "role": "judge",
+    "assigned_boxes": [
+      1
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T19:07:55.039383+00:00"
+  },
+  "az": {
+    "username": "az",
+    "password_hash": "$pbkdf2-sha256$29000$9f6/t1ZqLYWQ0tp7TwkBoA$6.lBAm3wnH7j1DHXK8Jj..sAKXhZdSMBFC1JAjXK6/E",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T19:07:40.187319+00:00"
+  },
+  "sx": {
+    "username": "sx",
+    "password_hash": "$pbkdf2-sha256$29000$hrD2HgNA6P3/P.d8r/WeMw$FHH/2P340zl6V7UrgwPfKv3HN4yBjuTXjEyLEBeAAjU",
+    "role": "judge",
+    "assigned_boxes": [
+      1
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-11T19:07:55.039383+00:00"
   }
 }

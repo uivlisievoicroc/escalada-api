@@ -10,24 +10,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: escalada
-          POSTGRES_PASSWORD: escalada
-          POSTGRES_DB: escalada_dev
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U escalada -d escalada_dev"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
-    env:
-      TEST_DATABASE_URL: postgresql+asyncpg://escalada:escalada@localhost:5432/escalada_dev
-
     steps:
       - uses: actions/checkout@v4
 
@@ -62,9 +44,6 @@ jobs:
 
       - name: Install escalada-core into API venv
         run: poetry run pip install -e ./escalada-core
-
-      - name: Apply migrations
-        run: poetry run python -c "import asyncio; from escalada.db.migrate import run_migrations; asyncio.run(run_migrations())"
 
       - name: Run tests
         run: poetry run pytest tests/ -q

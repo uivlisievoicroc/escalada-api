@@ -1,0 +1,43 @@
+{
+  "initiated": true,
+  "holdsCount": 13,
+  "currentClimber": "Chiorean Evelin",
+  "started": false,
+  "timerState": "idle",
+  "holdCount": 0.0,
+  "routeIndex": 2,
+  "routesCount": 2,
+  "holdsCounts": [
+    12,
+    13
+  ],
+  "competitors": [
+    {
+      "nume": "Ghiurka Éva",
+      "marked": true
+    },
+    {
+      "nume": "Chiorean Evelin",
+      "marked": false
+    },
+    {
+      "nume": "Nechifor Ema",
+      "marked": false
+    }
+  ],
+  "categorie": "sx",
+  "lastRegisteredTime": null,
+  "remaining": 300.0,
+  "timerPreset": "05:00",
+  "timerPresetSec": 300,
+  "timeCriterionEnabled": false,
+  "sessionId": "67804c07-d464-40fe-861f-91ecddaa69b0",
+  "boxVersion": 7,
+  "scores": {
+    "Ghiurka Éva": [
+      null,
+      5.0
+    ]
+  },
+  "times": {}
+}

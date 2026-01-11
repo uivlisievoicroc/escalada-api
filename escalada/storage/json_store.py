@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-STORAGE_MODE = os.getenv("STORAGE_MODE", "postgres").lower()
+# JSON-only build: Postgres/Alembic removed
+STORAGE_MODE = "json"
 STORAGE_DIR = os.getenv("STORAGE_DIR", "data")
 
 _box_locks: Dict[int, asyncio.Lock] = {}
@@ -163,7 +164,18 @@ def save_users(users: Dict[str, dict]) -> None:
 
 def get_users_with_default_admin() -> Dict[str, dict]:
     users = load_users()
+
     if "admin" in users:
+        # Optional escape hatch to reset admin password without editing users.json
+        if os.getenv("RESET_ADMIN_PASSWORD"):
+            from escalada.auth.service import hash_password
+
+            now = datetime.now(timezone.utc).isoformat()
+            password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin")
+            users["admin"]["password_hash"] = hash_password(password)
+            users["admin"]["updated_at"] = now
+            save_users(users)
+            logger.warning("Admin password was reset via RESET_ADMIN_PASSWORD")
         return users
     from escalada.auth.service import hash_password
 

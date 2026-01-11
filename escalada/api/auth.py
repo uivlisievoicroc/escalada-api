@@ -1,24 +1,29 @@
 import logging
+import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from escalada.auth.deps import get_current_claims, require_role
-from escalada.auth.service import (
-    create_access_token,
-    hash_password,
-    verify_password,
-)
-from escalada.db.database import get_session
-from escalada.db.repositories import UserRepository
-from escalada.storage.json_store import get_users_with_default_admin, is_json_mode, save_users
+from escalada.auth.service import create_access_token, hash_password, verify_password
+from escalada.storage.json_store import get_users_with_default_admin, save_users
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _canonical_username(username: str) -> str:
+    # Normalize unicode (handles NFC/NFD differences from mobile keyboards/QR scans)
+    s = unicodedata.normalize("NFKC", username or "")
+    # Drop format characters (e.g. zero-width spaces)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+    # Normalize whitespace (incl. NBSP)
+    s = "".join(" " if ch.isspace() else ch for ch in s)
+    return " ".join(s.strip().split())
+
 
 
 class LoginRequest(BaseModel):
@@ -34,43 +39,50 @@ class TokenResponse(BaseModel):
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-async def login(
-    payload: LoginRequest, session: AsyncSession = Depends(get_session)
-) -> TokenResponse:
-    if is_json_mode():
-        users = get_users_with_default_admin()
-        user = users.get(payload.username)
-        if not user or not user.get("is_active", True):
-            logger.warning("Login failed for %s: user not found or inactive", payload.username)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
-        if not verify_password(payload.password, user.get("password_hash") or ""):
-            logger.warning("Login failed for %s: invalid password", payload.username)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
-        token = create_access_token(
-            username=user.get("username") or payload.username,
-            role=user.get("role") or "viewer",
-            assigned_boxes=user.get("assigned_boxes") or [],
-        )
-        return TokenResponse(
-            access_token=token,
-            role=user.get("role") or "viewer",
-            boxes=user.get("assigned_boxes") or [],
-        )
-    user = await UserRepository.get_by_username(session, payload.username)
-    if not user or not user.is_active:
+async def login(payload: LoginRequest) -> TokenResponse:
+    users = get_users_with_default_admin()
+    requested = payload.username
+    canonical = _canonical_username(requested)
+
+    user_key = requested
+    user = users.get(user_key) or users.get(canonical)
+
+    # If caller passes just the box number (e.g. "0"), allow it as an alias for judge accounts.
+    if user is None and canonical.isdigit():
+        user_key = canonical
+        user = users.get(user_key)
+        if user is None:
+            boxed = _canonical_username(f"Box {canonical}")
+            user_key = boxed
+            user = users.get(user_key)
+    if user is None:
+        for k, v in users.items():
+            if _canonical_username(k).casefold() == canonical.casefold():
+                user_key = k
+                user = v
+                break
+    if not user or not user.get("is_active", True):
         logger.warning("Login failed for %s: user not found or inactive", payload.username)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_credentials",
+        )
 
-    if not verify_password(payload.password, user.password_hash):
+    if not verify_password(payload.password, user.get("password_hash") or ""):
         logger.warning("Login failed for %s: invalid password", payload.username)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_credentials",
+        )
 
+    role = user.get("role") or "viewer"
+    boxes = user.get("assigned_boxes") or []
     token = create_access_token(
-        username=user.username,
-        role=user.role,
-        assigned_boxes=user.assigned_boxes or [],
+        username=user.get("username") or user_key,
+        role=role,
+        assigned_boxes=boxes,
     )
-    return TokenResponse(access_token=token, role=user.role, boxes=user.assigned_boxes or [])
+    return TokenResponse(access_token=token, role=role, boxes=boxes)
 
 
 @router.get("/auth/me")
@@ -90,9 +102,7 @@ async def magic_login(payload: MagicLoginRequest) -> TokenResponse:
 
 @router.post("/admin/auth/boxes/{box_id}/magic-token")
 async def issue_magic_token(box_id: int, claims=Depends(require_role(["admin"]))):
-    """
-    Magic tokens dezactivate.
-    """
+    """Magic tokens dezactivate."""
     raise HTTPException(status_code=status.HTTP_410_GONE, detail="magic_token_disabled")
 
 
@@ -105,31 +115,46 @@ class SetJudgePasswordRequest(BaseModel):
 async def set_judge_password(
     box_id: int,
     payload: SetJudgePasswordRequest,
-    session: AsyncSession = Depends(get_session),
     claims=Depends(require_role(["admin"])),
 ):
     """Setează/creează parola pentru userul judge al box-ului (implicit username=Box {id})."""
-    if is_json_mode():
-        users = get_users_with_default_admin()
-        username = payload.username or f"Box {box_id}"
-        now = datetime.now(timezone.utc).isoformat()
-        users[username] = {
-            "username": username,
-            "password_hash": hash_password(payload.password),
-            "role": "judge",
-            "assigned_boxes": [box_id],
-            "is_active": True,
-            "created_at": users.get(username, {}).get("created_at") or now,
-            "updated_at": now,
-        }
-        save_users(users)
-        return {"status": "ok", "boxId": box_id}
-    pwd_hash = hash_password(payload.password)
-    await UserRepository.upsert_judge(
-        session,
-        box_id=box_id,
-        password_hash=pwd_hash,
-        username=payload.username,
-    )
-    await session.commit()
-    return {"status": "ok", "boxId": box_id}
+    users = get_users_with_default_admin()
+    raw_username = payload.username or f"Box {box_id}"
+    username = _canonical_username(raw_username) or f"Box {box_id}"
+    alias_username = _canonical_username(f"Box {box_id}") or f"Box {box_id}"
+    id_username = _canonical_username(str(box_id)) or str(box_id)
+
+    password = (payload.password or "").strip()
+    if not password:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="password_required")
+
+    # Migrate legacy key with non-canonical whitespace (if any).
+    if raw_username in users and username != raw_username and username not in users:
+        users[username] = users.pop(raw_username)
+
+    aliases = [username, alias_username, id_username]
+
+    # Preserve earliest created_at across possible aliases.
+    created_candidates = []
+    for u in aliases:
+        v = users.get(u, {})
+        if isinstance(v, dict) and v.get("created_at"):
+            created_candidates.append(v.get("created_at"))
+
+    now = datetime.now(timezone.utc).isoformat()
+    created_at = min(created_candidates) if created_candidates else now
+
+    record = {
+        "password_hash": hash_password(password),
+        "role": "judge",
+        "assigned_boxes": [box_id],
+        "is_active": True,
+        "created_at": created_at,
+        "updated_at": now,
+    }
+
+    for u in aliases:
+        users[u] = {"username": u, **record}
+
+    save_users(users)
+    return {"status": "ok", "boxId": box_id, "username": username, "alias": alias_username, "id_alias": id_username}

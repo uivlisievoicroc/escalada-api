@@ -3,7 +3,6 @@ import csv
 import io
 import json
 import os
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -12,16 +11,12 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import text
 
-from escalada.auth.deps import require_role
 from escalada.api import live
 from escalada.api.official_export import build_official_results_zip, safe_zip_component
-from escalada.db.database import AsyncSessionLocal
-from escalada.db import repositories as repos
-from escalada.db.models import Box
 from escalada.api.save_ranking import _build_overall_df, _format_time
-from escalada.storage.json_store import is_json_mode, save_box_state
+from escalada.auth.deps import require_role
+from escalada.storage.json_store import save_box_state
 
 router = APIRouter()
 
@@ -54,8 +49,10 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
         "scores": scores,
         "times": times,
     }
+
     if not snapshot.get("routesCount"):
         snapshot["routesCount"] = state.get("routeIndex") or 1
+
     if not snapshot.get("competitorsAll"):
         comps_state = state.get("competitors") or []
         for idx, comp in enumerate(comps_state):
@@ -98,145 +95,27 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
     return snapshot
 
 
-async def _fetch_box_snapshot(session, box_id: int) -> Dict[str, Any] | None:
-    if is_json_mode() or session is None:
-        state = live.state_map.get(box_id) or live._default_state()
-        return _snapshot_from_state(box_id, state)
-
-    box_repo = repos.BoxRepository(session)
-    box = await box_repo.get_by_id(box_id)
-    if not box:
-        # fallback pe state-ul din memorie
-        state = live.state_map.get(box_id) or live._default_state()
-        return _snapshot_from_state(box_id, state)
-
-    # Build snapshot similar to /api/state
-    state_db = box.state or {}
-    state_live = live.state_map.get(box_id) or {}
-    scores = state_db.get("scores") or state_live.get("scores") or {}
-    times = state_db.get("times") or state_live.get("times") or {}
-    categorie = state_db.get("categorie") or state_live.get("categorie") or ""
-    competitors_state = state_db.get("competitors")
-    if competitors_state is None:
-        competitors_state = state_live.get("competitors")
-    state = state_db
-    snapshot = {
-        "boxId": box.id,
-        "competitionId": box.competition_id,
-        "initiated": state.get("initiated", state_live.get("initiated", False)),
-        "holdsCount": state.get("holdsCount", state_live.get("holdsCount", 0)),
-        "holdsCounts": state.get("holdsCounts", state_live.get("holdsCounts", [])),
-        "routeIndex": state.get("routeIndex", state_live.get("routeIndex", 1)),
-        "routesCount": box.routes_count,
-        "currentClimber": state.get("currentClimber", state_live.get("currentClimber", "")),
-        "started": state.get("started", state_live.get("started", False)),
-        "timerState": state.get("timerState", state_live.get("timerState", "idle")),
-        "holdCount": state.get("holdCount", state_live.get("holdCount", 0.0)),
-        "competitors": competitors_state or [],
-        "categorie": categorie,
-        "registeredTime": state.get("lastRegisteredTime", state_live.get("lastRegisteredTime")),
-        "remaining": state.get("remaining", state_live.get("remaining")),
-        "timeCriterionEnabled": state.get("timeCriterionEnabled", state_live.get("timeCriterionEnabled", False)),
-        "timerPreset": state.get("timerPreset", state_live.get("timerPreset")),
-        "timerPresetSec": state.get("timerPresetSec", state_live.get("timerPresetSec")),
-        "sessionId": box.session_id,
-        "boxVersion": box.box_version or 0,
-    }
-
-    # Load competitors assigned to this box (if any)
-    comp_repo = repos.CompetitorRepository(session)
-    competitors = await comp_repo.list_by_competition(box.competition_id)
-    snapshot["competitorsAll"] = [
-        {
-            "id": c.id,
-            "name": c.name,
-            "category": c.category,
-            "bib": c.bib,
-            "boxId": c.box_id,
-        }
-        for c in competitors
-    ]
-
-    # Minimal “scores” placeholder (extend as needed)
-    snapshot["scores"] = scores
-    snapshot["times"] = times
-
-    # If DB competitors missing but state has them, include minimal list
-    if not snapshot.get("competitorsAll"):
-        comps_state = state.get("competitors") or []
-        snapshot["competitorsAll"] = []
-        for idx, comp in enumerate(comps_state):
-            if not isinstance(comp, dict):
-                continue
-            snapshot["competitorsAll"].append(
-                {
-                    "id": None,
-                    "name": comp.get("nume") or comp.get("name") or f"comp_{idx}",
-                    "category": comp.get("categorie") or comp.get("category"),
-                    "bib": comp.get("bib"),
-                    "boxId": box.id if box else box_id,
-                }
-            )
-
-    # Ranking (overall) computed from state scores if available
-    try:
-        scores = snapshot.get("scores") or {}
-        times = snapshot.get("times") or {}
-        route_count = snapshot.get("routesCount") or 0
-        if scores and route_count:
-            df_overall = _build_overall_df(
-                type(
-                    "Payload",
-                    (),
-                    {
-                        "scores": scores,
-                        "route_count": route_count,
-                        "clubs": {},
-                        "include_clubs": False,
-                        "times": times,
-                        "use_time_tiebreak": bool(snapshot.get("timeCriterionEnabled")),
-                    },
-                ),
-                times,
-            )
-            snapshot["ranking"] = df_overall.to_dict(orient="records")
-        else:
-            snapshot["ranking"] = []
-    except Exception:
-        snapshot["ranking"] = []
-
-    return snapshot
+async def _fetch_box_snapshot(box_id: int) -> Dict[str, Any] | None:
+    state = live.state_map.get(box_id) or live._default_state()
+    return _snapshot_from_state(box_id, state)
 
 
 @router.get("/backup/box/{box_id}")
 async def backup_box(box_id: int, claims=Depends(require_role(["admin"]))):
-    """Return JSON snapshot for a single box."""
-    if is_json_mode():
-        snap = await _fetch_box_snapshot(None, box_id)
-        if not snap:
-            raise HTTPException(status_code=404, detail="box_not_found")
-        return {"status": "ok", "snapshot": snap}
-    async with AsyncSessionLocal() as session:
-        snap = await _fetch_box_snapshot(session, box_id)
-        if not snap:
-            raise HTTPException(status_code=404, detail="box_not_found")
-        return {"status": "ok", "snapshot": snap}
+    snap = await _fetch_box_snapshot(box_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="box_not_found")
+    return {"status": "ok", "snapshot": snap}
 
 
 @router.get("/backup/full")
 async def backup_full(claims=Depends(require_role(["admin"]))):
-    """Return JSON snapshots for all boxes across competitions."""
-    if is_json_mode():
-        snapshots = await collect_snapshots(None)
-        return {"status": "ok", "snapshots": snapshots}
-    async with AsyncSessionLocal() as session:
-        snapshots = await collect_snapshots(session)
-        return {"status": "ok", "snapshots": snapshots}
+    snapshots = await collect_snapshots()
+    return {"status": "ok", "snapshots": snapshots}
 
 
 @router.get("/backup/last")
 async def backup_last(download: bool = False, claims=Depends(require_role(["admin"]))):
-    """Return metadata for last backup or download it."""
     out_dir = Path(os.getenv("BACKUP_DIR", "backups"))
     last_file = latest_backup_file(out_dir)
     if not last_file:
@@ -256,11 +135,8 @@ async def backup_last(download: bool = False, claims=Depends(require_role(["admi
 @router.get("/export/box/{box_id}")
 async def export_box_csv(box_id: int, claims=Depends(require_role(["admin"]))):
     """Export current state to CSV (lightweight per-box export)."""
-    if is_json_mode():
-        snap = await _fetch_box_snapshot(None, box_id)
-    else:
-        async with AsyncSessionLocal() as session:
-            snap = await _fetch_box_snapshot(session, box_id)
+
+    snap = await _fetch_box_snapshot(box_id)
     if not snap:
         raise HTTPException(status_code=404, detail="box_not_found")
 
@@ -284,15 +160,16 @@ async def export_box_csv(box_id: int, claims=Depends(require_role(["admin"]))):
     writer.writerow(["Competitors (all)"])
     writer.writerow(["id", "name", "category", "bib", "boxId"])
     for c in snap.get("competitorsAll", []):
-        writer.writerow([
-            c.get("id"),
-            c.get("name"),
-            c.get("category"),
-            c.get("bib"),
-            c.get("boxId"),
-        ])
+        writer.writerow(
+            [
+                c.get("id"),
+                c.get("name"),
+                c.get("category"),
+                c.get("bib"),
+                c.get("boxId"),
+            ]
+        )
 
-    # Scores per competitor (if available)
     scores = snap.get("scores") or {}
     times = snap.get("times") or {}
     if scores:
@@ -316,7 +193,6 @@ async def export_box_csv(box_id: int, claims=Depends(require_role(["admin"]))):
                     row.append(_format_time(t_arr[i]) if i < len(t_arr) else "")
             writer.writerow(row)
 
-    # Ranking section if available
     ranking = snap.get("ranking") or []
     if ranking:
         writer.writerow([])
@@ -330,23 +206,17 @@ async def export_box_csv(box_id: int, claims=Depends(require_role(["admin"]))):
     return Response(
         content=csv_bytes,
         media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=box_{box_id}_export.csv"
-        },
+        headers={"Content-Disposition": f"attachment; filename=box_{box_id}_export.csv"},
     )
+
 
 @router.get("/export/official/box/{box_id}")
 async def export_official_results_zip(box_id: int, claims=Depends(require_role(["admin"]))):
     """Export "official" results bundle (ZIP with XLSX+PDF) for a box."""
-    if is_json_mode():
-        snap = await _fetch_box_snapshot(None, box_id)
-        if not snap:
-            raise HTTPException(status_code=404, detail="box_not_found")
-    else:
-        async with AsyncSessionLocal() as session:
-            snap = await _fetch_box_snapshot(session, box_id)
-            if not snap:
-                raise HTTPException(status_code=404, detail="box_not_found")
+
+    snap = await _fetch_box_snapshot(box_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="box_not_found")
 
     try:
         zip_bytes = build_official_results_zip(snap)
@@ -369,10 +239,8 @@ class RestoreRequest(BaseModel):
 
 
 def _state_from_backup_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert an external backup snapshot (as returned by /backup/*) back into
-    internal live state shape (as used by escalada.api.live).
-    """
+    """Convert backup snapshot back into internal live state shape."""
+
     session_id = snapshot.get("sessionId")
     box_version = snapshot.get("boxVersion", 0) or 0
 
@@ -382,7 +250,9 @@ def _state_from_backup_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "initiated": bool(snapshot.get("initiated", False)),
             "holdsCount": snapshot.get("holdsCount", 0) or 0,
             "routeIndex": snapshot.get("routeIndex", 1) or 1,
-            "routesCount": snapshot.get("routesCount") or snapshot.get("routes_count") or 1,
+            "routesCount": snapshot.get("routesCount")
+            or snapshot.get("routes_count")
+            or 1,
             "holdsCounts": snapshot.get("holdsCounts") or [],
             "currentClimber": snapshot.get("currentClimber", "") or "",
             "started": bool(snapshot.get("started", False)),
@@ -404,124 +274,6 @@ def _state_from_backup_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
-async def _bump_pk_sequence(session, table_name: str, column_name: str) -> None:
-    """Postgres: bump SERIAL/IDENTITY sequence after explicit PK inserts."""
-    try:
-        seq_result = await session.execute(
-            text("SELECT pg_get_serial_sequence(:t, :c)"),
-            {"t": table_name, "c": column_name},
-        )
-        seq_name = seq_result.scalar_one_or_none()
-        if not seq_name:
-            return
-        await session.execute(
-            text(
-                f"SELECT setval('{seq_name}', (SELECT MAX({column_name}) FROM {table_name}))"
-            )
-        )
-    except Exception:
-        # Non-Postgres or missing privileges: ignore (best-effort)
-        return
-
-
-async def restore_snapshots(
-    session,
-    snapshots: List[Dict[str, Any]],
-    *,
-    box_ids: List[int] | None = None,
-    hydrate_memory: bool = True,
-    bump_sequences: bool = True,
-) -> tuple[list[int], list[dict]]:
-    """
-    Restore snapshots into DB + in-memory state_map.
-
-    Policy:
-      - accept if incoming boxVersion > current
-      - accept if same version and sessionId matches (when both present)
-      - reject if incoming boxVersion < current
-    Returns: (restored_box_ids, conflicts)
-    """
-    # Defensive: callers may reuse a long-lived session (tests, scripts).
-    # Clear identity map so we don't accidentally update stale ORM instances
-    # after TRUNCATE/RESTORE operations.
-    try:
-        session.expunge_all()
-    except Exception:
-        pass
-
-    conflicts: list[dict] = []
-    restored: list[int] = []
-
-    box_repo = repos.BoxRepository(session)
-    comp_repo = repos.CompetitionRepository(session)
-    comp = await comp_repo.get_by_name("Restored Default")
-    if not comp:
-        comp = await comp_repo.create(name="Restored Default")
-        await session.flush()
-
-    for snap in snapshots:
-        box_id = snap.get("boxId")
-        if box_ids and box_id not in box_ids:
-            continue
-        if box_id is None:
-            continue
-
-        state = _state_from_backup_snapshot(snap)
-        desired_version = state.get("boxVersion", 0) or 0
-        desired_session_id = state.get("sessionId")
-
-        box = await box_repo.get_by_id(box_id)
-        current_version = box.box_version if box else -1
-        current_session = box.session_id if box else None
-
-        if box and desired_version < current_version:
-            conflicts.append({"boxId": box_id, "reason": "lower_version"})
-            continue
-        if (
-            box
-            and desired_version == current_version
-            and desired_session_id
-            and current_session
-            and desired_session_id != current_session
-        ):
-            conflicts.append({"boxId": box_id, "reason": "session_conflict"})
-            continue
-
-        if not box:
-            # Create box with explicit ID to preserve UI addressing on full restore.
-            box = Box(
-                id=int(box_id),
-                competition_id=comp.id,
-                name=f"Restored Box {box_id}",
-                route_index=int(state.get("routeIndex", 1) or 1),
-                routes_count=int(state.get("routesCount", 1) or 1),
-                holds_count=int(state.get("holdsCount", 0) or 0),
-                state={},
-                box_version=0,
-                session_id=desired_session_id or str(uuid.uuid4()),
-            )
-            session.add(box)
-            await session.flush()
-
-        box.state = state
-        box.box_version = int(desired_version)
-        box.session_id = desired_session_id or box.session_id
-        await session.flush()
-
-        # Sync in-memory snapshot (optional; disable for dry-run drills)
-        if hydrate_memory:
-            async with live.init_lock:
-                live.state_map[int(box_id)] = state
-                live.state_map[int(box_id)]["sessionId"] = box.session_id
-                live.state_map[int(box_id)]["boxVersion"] = box.box_version
-        restored.append(int(box_id))
-
-    if restored and bump_sequences:
-        await _bump_pk_sequence(session, "boxes", "id")
-
-    return restored, conflicts
-
-
 async def restore_snapshots_json(
     snapshots: List[Dict[str, Any]],
     *,
@@ -534,6 +286,7 @@ async def restore_snapshots_json(
             continue
         if box_ids and box_id not in box_ids:
             continue
+
         state = _state_from_backup_snapshot(snap)
         async with live.init_lock:
             live.state_map[int(box_id)] = state
@@ -545,64 +298,25 @@ async def restore_snapshots_json(
 
 @router.post("/restore")
 async def restore_backup(payload: RestoreRequest, claims=Depends(require_role(["admin"]))):
-    """
-    Restore snapshots. Policy: accept if incoming boxVersion > current OR same version with matching sessionId.
-    Otherwise raise conflict.
-    """
-    if is_json_mode():
-        restored = await restore_snapshots_json(
-            payload.snapshots,
-            box_ids=payload.box_ids,
-        )
-        return {"status": "ok", "restored": restored}
-    async with AsyncSessionLocal() as session:
-        restored, conflicts = await restore_snapshots(
-            session,
-            payload.snapshots,
-            box_ids=payload.box_ids,
-        )
-        await session.commit()
-
-    if conflicts:
-        raise HTTPException(
-            status_code=409,
-            detail={"restore_conflict": conflicts, "restored": restored},
-        )
+    restored = await restore_snapshots_json(
+        payload.snapshots,
+        box_ids=payload.box_ids,
+    )
     return {"status": "ok", "restored": restored}
 
 
-async def collect_snapshots(session) -> List[Dict[str, Any]]:
-    """Collect snapshots for all boxes from DB + in-memory."""
-    if is_json_mode():
-        snapshots: List[Dict[str, Any]] = []
-        for box_id, state in live.state_map.items():
-            snap = _snapshot_from_state(int(box_id), state)
-            snapshots.append(snap)
-        return snapshots
+async def collect_snapshots() -> List[Dict[str, Any]]:
+    """Collect snapshots for all boxes from in-memory state_map."""
 
-    box_repo = repos.BoxRepository(session)
-    comp_repo = repos.CompetitionRepository(session)
-    competitions = await comp_repo.list_all()
-    snapshots = []
-    for comp in competitions:
-        boxes = await box_repo.list_by_competition(comp.id)
-        for box in boxes:
-            snap = await _fetch_box_snapshot(session, box.id)
-            if snap:
-                snapshots.append(snap)
-
-    # Include și box-urile doar în memorie
-    for box_id in live.state_map.keys():
-        if any(s.get("boxId") == box_id for s in snapshots):
-            continue
-        snap = await _fetch_box_snapshot(session, box_id)
-        if snap:
-            snapshots.append(snap)
+    snapshots: List[Dict[str, Any]] = []
+    for box_id, state in live.state_map.items():
+        snapshots.append(_snapshot_from_state(int(box_id), state))
     return snapshots
 
 
 async def write_backup_file(output_dir: Path, snapshots: List[Dict[str, Any]]) -> Path:
     """Persist snapshots to a JSON file on disk."""
+
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     path = output_dir / f"backup_{ts}.json"
@@ -611,5 +325,9 @@ async def write_backup_file(output_dir: Path, snapshots: List[Dict[str, Any]]) -
 
 
 def latest_backup_file(output_dir: Path) -> Path | None:
-    files = sorted(output_dir.glob("backup_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(
+        output_dir.glob("backup_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     return files[0] if files else None

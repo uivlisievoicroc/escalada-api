@@ -10,7 +10,6 @@ from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, text
 from starlette.websockets import WebSocket
 
 from escalada.rate_limit import check_rate_limit
@@ -23,9 +22,6 @@ from escalada_core import (
     parse_timer_preset,
     validate_session_and_version,
 )
-from escalada.db.database import AsyncSessionLocal
-from escalada.db import repositories as repos
-from escalada.db.models import Box
 from escalada.auth.deps import (
     require_box_access,
     require_view_access,
@@ -36,7 +32,6 @@ from escalada.storage.json_store import (
     append_audit_event,
     build_audit_event,
     ensure_storage_dirs,
-    is_json_mode,
     load_box_states,
     save_box_state,
 )
@@ -48,7 +43,6 @@ state_locks: Dict[int, asyncio.Lock] = {}  # Lock per boxId
 init_lock = asyncio.Lock()  # Protects state_map and state_locks initialization
 current_actor: ContextVar[dict[str, Any] | None] = ContextVar("current_actor", default=None)
 
-
 router = APIRouter()
 channels: dict[int, set[WebSocket]] = {}
 channels_lock = asyncio.Lock()  # Protects concurrent access to channels dict
@@ -57,45 +51,6 @@ public_channels_lock = asyncio.Lock()
 
 # Test mode - disable validation for backward compatibility
 VALIDATION_ENABLED = True
-
-
-async def preload_states_from_db() -> int:
-    """
-    Hydrate in-memory state_map from DB at startup to ensure automatic restore.
-    Returns number of boxes loaded.
-    """
-    try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(select(Box))
-            boxes = result.scalars().all()
-    except Exception as exc:
-        logger.warning(f"Skipped preloading states from DB: {exc}")
-        return 0
-
-    loaded = 0
-    async with init_lock:
-        for box in boxes:
-            state = default_state(box.session_id)
-            state.update(box.state or {})
-            state["boxVersion"] = box.box_version or 0
-            if box.session_id:
-                state["sessionId"] = box.session_id
-            if "routesCount" not in state and box.routes_count is not None:
-                state["routesCount"] = box.routes_count
-            if "routeIndex" not in state and box.route_index is not None:
-                state["routeIndex"] = box.route_index
-            if "holdsCount" not in state and box.holds_count is not None:
-                state["holdsCount"] = box.holds_count
-            if "holdsCounts" not in state:
-                state["holdsCounts"] = []
-            state_map[box.id] = state
-            state_locks[box.id] = state_locks.get(box.id) or asyncio.Lock()
-            loaded += 1
-
-    if loaded:
-        logger.info(f"Preloaded {loaded} box states from DB")
-    return loaded
-
 
 async def preload_states_from_json() -> int:
     ensure_storage_dirs()
@@ -110,13 +65,8 @@ async def preload_states_from_json() -> int:
         logger.info(f"Preloaded {loaded} box states from JSON")
     return loaded
 
-
 async def preload_states() -> int:
-    if is_json_mode():
-        return await preload_states_from_json()
-    return await preload_states_from_db()
-
-
+    return await preload_states_from_json()
 class Cmd(BaseModel):
     """Legacy Cmd model - use ValidatedCmd for new validation"""
 
@@ -157,7 +107,6 @@ class Cmd(BaseModel):
     # Box version for stale command detection (TASK 2.6)
     boxVersion: int | None = None
 
-
 def _get_actor_from_request_and_claims(
     request: Request | None, claims: dict | None
 ) -> dict[str, Any] | None:
@@ -173,7 +122,6 @@ def _get_actor_from_request_and_claims(
         ip = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
     return {"username": username, "role": role, "ip": ip, "user_agent": user_agent}
-
 
 @router.post("/cmd")
 async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_access)):
@@ -221,6 +169,9 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
             logger.warning(f"Command validation failed for box {cmd.boxId}: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid command: {str(e)}")
 
+        # Use validated command downstream (normalization + stricter schema)
+        cmd = validated_cmd
+
         # ==================== RATE LIMITING ====================
         # Skip rate limiting in test mode (when VALIDATION_ENABLED is False)
         if VALIDATION_ENABLED:
@@ -242,7 +193,6 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
             if cmd.boxId not in state_locks:
                 state_locks[cmd.boxId] = asyncio.Lock()
             lock = state_locks[cmd.boxId]
-
 
         # Lock state access for this boxId
         async with lock:
@@ -306,7 +256,6 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
         except Exception:
             pass
 
-
 async def _heartbeat(ws: WebSocket, box_id: int, last_pong: dict[str, float]) -> None:
     """Send PING every 30s; close if no PONG for 60s."""
     heartbeat_interval = 30
@@ -334,7 +283,6 @@ async def _heartbeat(ws: WebSocket, box_id: int, last_pong: dict[str, float]) ->
             logger.debug(f"Heartbeat error for box {box_id}: {e}")
             break
 
-
 async def _broadcast_to_box(box_id: int, payload: dict) -> None:
     """Safely broadcast JSON payload to all subscribers on a box.
     Removes dead connections automatically.
@@ -357,6 +305,34 @@ async def _broadcast_to_box(box_id: int, payload: dict) -> None:
             for ws in dead:
                 channels.get(box_id, set()).discard(ws)
 
+def _public_preparing_climber(state: dict) -> str:
+    competitors = state.get("competitors") or []
+    if not isinstance(competitors, list):
+        return ""
+
+    current = state.get("currentClimber")
+    if not isinstance(current, str) or not current:
+        return ""
+
+    current_idx = None
+    for i, comp in enumerate(competitors):
+        if isinstance(comp, dict) and comp.get("nume") == current:
+            current_idx = i
+            break
+    if current_idx is None:
+        return ""
+
+    for comp in competitors[current_idx + 1 :]:
+        if not isinstance(comp, dict):
+            continue
+        name = comp.get("nume")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if comp.get("marked"):
+            continue
+        return name
+    return ""
+
 
 def _build_public_box_state(box_id: int, state: dict) -> dict:
     routes_count = state.get("routesCount")
@@ -374,13 +350,13 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
         "holdsCount": state.get("holdsCount", 0),
         "holdsCounts": holds_counts,
         "currentClimber": state.get("currentClimber", ""),
+        "preparingClimber": (state.get("preparingClimber") or _public_preparing_climber(state)),
         "timerState": state.get("timerState", "idle"),
         "remaining": state.get("remaining"),
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
         "scoresByName": state.get("scores") or {},
         "timesByName": state.get("times") or {},
     }
-
 
 async def _broadcast_public(payload: dict) -> None:
     async with public_channels_lock:
@@ -399,7 +375,6 @@ async def _broadcast_public(payload: dict) -> None:
             for ws in dead:
                 public_channels.discard(ws)
 
-
 async def _build_public_snapshot_payload() -> dict:
     async with init_lock:
         items = list(state_map.items())
@@ -407,7 +382,6 @@ async def _build_public_snapshot_payload() -> dict:
         "type": "PUBLIC_STATE_SNAPSHOT",
         "boxes": [_build_public_box_state(box_id, state) for box_id, state in items],
     }
-
 
 async def _send_public_snapshot(targets: set[WebSocket] | None = None) -> None:
     payload = await _build_public_snapshot_payload()
@@ -420,7 +394,6 @@ async def _send_public_snapshot(targets: set[WebSocket] | None = None) -> None:
     else:
         await _broadcast_public(payload)
 
-
 async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
     state = state_map.get(box_id)
     if not state:
@@ -430,7 +403,6 @@ async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
         "box": _build_public_box_state(box_id, state),
     }
     await _broadcast_public(payload)
-
 
 def _public_update_type(cmd_type: str) -> str | None:
     return {
@@ -445,7 +417,6 @@ def _public_update_type(cmd_type: str) -> str | None:
         "SET_TIME_CRITERION": "BOX_RANKING_UPDATE",
     }.get(cmd_type)
 
-
 def _authorize_ws(box_id: int, claims: dict) -> bool:
     """Return True if claims allow subscription to box_id."""
     role = claims.get("role")
@@ -459,21 +430,30 @@ def _authorize_ws(box_id: int, claims: dict) -> bool:
         return not boxes or int(box_id) in boxes
     return False
 
-
 @router.websocket("/ws/{box_id}")
 async def websocket_endpoint(ws: WebSocket, box_id: int):
+    peer = ws.client.host if ws.client else None
     token = ws.query_params.get("token")
     if not token:
+        logger.warning("WS connect denied: token_required box=%s ip=%s", box_id, peer)
         await ws.close(code=4401, reason="token_required")
         return
 
     try:
         claims = decode_token(token)
     except HTTPException as exc:
+        logger.warning("WS connect denied: invalid_token box=%s ip=%s detail=%s", box_id, peer, exc.detail)
         await ws.close(code=4401, reason=exc.detail or "invalid_token")
         return
 
     if not _authorize_ws(box_id, claims):
+        logger.warning(
+            "WS connect denied: forbidden box=%s ip=%s role=%s boxes=%s",
+            box_id,
+            peer,
+            claims.get("role"),
+            claims.get("boxes"),
+        )
         await ws.close(code=4403, reason="forbidden_box_or_role")
         return
 
@@ -517,6 +497,21 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
                     # NEW: Handle REQUEST_STATE command
                     if msg_type == "REQUEST_STATE":
                         requested_box_id = msg.get("boxId", box_id)
+                        try:
+                            requested_box_id = int(requested_box_id)
+                        except Exception:
+                            continue
+
+                        if requested_box_id != int(box_id) and not _authorize_ws(requested_box_id, claims):
+                            logger.warning(
+                                "Forbidden WS REQUEST_STATE: conn_box=%s requested_box=%s role=%s boxes=%s",
+                                box_id,
+                                requested_box_id,
+                                claims.get("role"),
+                                claims.get("boxes"),
+                            )
+                            continue
+
                         logger.info(
                             f"WebSocket REQUEST_STATE for box {requested_box_id}"
                         )
@@ -549,11 +544,9 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
         except Exception:
             pass
 
-
 @router.get("/public/rankings")
 async def public_rankings():
     return await _build_public_snapshot_payload()
-
 
 @router.websocket("/public/ws")
 async def public_websocket(ws: WebSocket):
@@ -617,10 +610,8 @@ async def public_websocket(ws: WebSocket):
         except Exception:
             pass
 
-
 # Route to get state snapshot for a box
 from fastapi import HTTPException
-
 
 @router.get("/state/{box_id}")
 async def get_state(box_id: int, claims=Depends(require_view_box_access())):
@@ -638,7 +629,6 @@ async def get_state(box_id: int, claims=Depends(require_view_box_access())):
     state = state_map[box_id]
     return _build_snapshot(box_id, state)
 
-
 # helpers
 def _build_snapshot(box_id: int, state: dict) -> dict:
     return {
@@ -650,6 +640,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "routesCount": state.get("routesCount"),
         "holdsCounts": state.get("holdsCounts"),
         "currentClimber": state.get("currentClimber", ""),
+        "preparingClimber": state.get("preparingClimber", ""),
         "started": state.get("started", False),
         "timerState": state.get("timerState", "idle"),
         "holdCount": state.get("holdCount", 0.0),
@@ -663,7 +654,6 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "sessionId": state.get("sessionId"),  # Include session ID for client validation
         "boxVersion": state.get("boxVersion", 0),
     }
-
 
 async def _send_state_snapshot(box_id: int, targets: set[WebSocket] | None = None):
     # Ensure state exists before sending snapshot
@@ -688,212 +678,48 @@ async def _send_state_snapshot(box_id: int, targets: set[WebSocket] | None = Non
         # Otherwise broadcast to all subscribers on this box
         await _broadcast_to_box(box_id, payload)
 
-
 async def _ensure_state(box_id: int) -> dict:
-    """Ensure in-memory state exists, hydrated from DB when possible."""
-    if is_json_mode():
-        async with init_lock:
-            existing = state_map.get(box_id)
-            if existing is not None:
-                return existing
-            if box_id not in state_locks:
-                state_locks[box_id] = asyncio.Lock()
-            state = default_state()
-            state_map[box_id] = state
-            return state
-
+    """Ensure in-memory state exists (JSON-only)."""
     async with init_lock:
         existing = state_map.get(box_id)
         if existing is not None:
             return existing
-
-    if not VALIDATION_ENABLED:
+        if box_id not in state_locks:
+            state_locks[box_id] = asyncio.Lock()
         state = default_state()
-        state["boxVersion"] = 0
-        async with init_lock:
-            state_map[box_id] = state
+        state_map[box_id] = state
         return state
 
-    # Try to hydrate from database
-    persisted = None
-    session_id = None
-    box_version = 0
-    try:
-        async with AsyncSessionLocal() as session:
-            repo = repos.BoxRepository(session)
-            box = await repo.get_by_id(box_id)
-            if box:
-                persisted = box.state or {}
-                session_id = box.session_id
-                box_version = box.box_version or 0
-    except Exception as e:
-        logger.warning(f"Failed to hydrate box {box_id} from DB: {e}")
-
-    state = default_state(session_id)
-    state.update(persisted or {})
-    if box:
-        if "routesCount" not in state and box.routes_count is not None:
-            state["routesCount"] = box.routes_count
-        if "routeIndex" not in state and box.route_index is not None:
-            state["routeIndex"] = box.route_index
-        if "holdsCount" not in state and box.holds_count is not None:
-            state["holdsCount"] = box.holds_count
-    if "holdsCounts" not in state:
-        state["holdsCounts"] = []
-    state["boxVersion"] = box_version
-    if not state.get("sessionId"):
-        state["sessionId"] = state.get("sessionId") or default_state()["sessionId"]
-
-    async with init_lock:
-        state_map[box_id] = state
-    return state
-
-
 async def _persist_state(box_id: int, state: dict, action: str, payload: dict) -> str:
-    """
-    Persist snapshot + audit event.
-    Returns: "ok", "stale", "missing_box", or "error".
-    """
-    if is_json_mode():
-        if action != "INIT_ROUTE":
-            state["boxVersion"] = int(state.get("boxVersion", 0) or 0) + 1
-        await save_box_state(box_id, state)
-        event = build_audit_event(
-            action=action,
-            payload=payload,
-            box_id=box_id,
-            state=state,
-            actor=current_actor.get(),
-        )
-        await append_audit_event(event)
-        return "ok"
-
-    try:
-        async with AsyncSessionLocal() as session:
-            box_repo = repos.BoxRepository(session)
-            comp_repo = repos.CompetitionRepository(session)
-            event_repo = repos.EventRepository(session)
-
-            box = await box_repo.get_by_id(box_id)
-            if not box:
-                # Create a default competition/box so we don't drop events for new boxes.
-                #
-                # IMPORTANT: Use an explicit Box.id matching box_id to preserve the UI's
-                # stable addressing (0..N). Otherwise, auto-increment IDs will drift and
-                # exports/backups by boxId will read the wrong rows.
-                comp = await comp_repo.get_by_name("Runtime Default")
-                if not comp:
-                    comp = await comp_repo.create(name="Runtime Default")
-                box = Box(
-                    id=int(box_id),
-                    competition_id=comp.id,
-                    name=f"Box {box_id}",
-                    route_index=state.get("routeIndex", 1) or 1,
-                    routes_count=state.get("routesCount", 1) or 1,
-                    holds_count=state.get("holdsCount", 0) or 0,
-                    state={},
-                    box_version=0,
-                    session_id=state.get("sessionId") or str(uuid.uuid4()),
-                )
-                session.add(box)
-                await session.flush()
-                # Best-effort: keep Postgres sequence >= MAX(id) for future inserts.
-                try:
-                    await session.execute(
-                        text(
-                            "SELECT setval(pg_get_serial_sequence('boxes','id'), (SELECT MAX(id) FROM boxes))"
-                        )
-                    )
-                except Exception:
-                    pass
-
-            current_db_version = box.box_version or 0
-            updated_box, success = await box_repo.update_state_with_version(
-                box_id=box_id,
-                current_version=current_db_version,
-                new_state=state,
-                new_session_id=state.get("sessionId"),
-            )
-
-            if not success:
-                # Refresh in-memory state with authoritative DB snapshot
-                await box_repo.refresh(box)
-                authoritative = box.state or default_state(box.session_id)
-                authoritative["boxVersion"] = box.box_version
-                if box.session_id:
-                    authoritative["sessionId"] = box.session_id
-                async with init_lock:
-                    state_map[box_id] = authoritative
-                return "stale"
-
-            # Sync in-memory version/session with DB after successful update
-            state["boxVersion"] = updated_box.box_version
-            if updated_box.session_id:
-                state["sessionId"] = updated_box.session_id
-
-            await event_repo.log_event(
-                competition_id=updated_box.competition_id,
-                action=action,
-                payload=payload,
-                box_id=updated_box.id,
-                session_id=state.get("sessionId"),
-                box_version=state.get("boxVersion", 0) or 0,
-                action_id=payload.get("actionId") if isinstance(payload, dict) else None,
-                actor_username=(current_actor.get() or {}).get("username"),
-                actor_role=(current_actor.get() or {}).get("role"),
-                actor_ip=(current_actor.get() or {}).get("ip"),
-                actor_user_agent=(current_actor.get() or {}).get("user_agent"),
-            )
-            await session.commit()
-            return "ok"
-    except Exception as e:
-        logger.warning(f"Failed to persist state for box {box_id}: {e}")
-        return "error"
-
+    """Persist snapshot + audit event (JSON-only)."""
+    if action != "INIT_ROUTE":
+        state["boxVersion"] = int(state.get("boxVersion", 0) or 0) + 1
+    await save_box_state(box_id, state)
+    event = build_audit_event(
+        action=action,
+        payload=payload,
+        box_id=box_id,
+        state=state,
+        actor=current_actor.get(),
+    )
+    await append_audit_event(event)
+    return "ok"
 
 async def _persist_audit_only(action: str, payload: dict) -> None:
-    """Persist an audit event that doesn't mutate box state (best-effort)."""
-    if is_json_mode():
-        box_id = payload.get("boxId") if isinstance(payload, dict) else None
-        event = build_audit_event(
-            action=action,
-            payload=payload if isinstance(payload, dict) else {},
-            box_id=box_id,
-            state=state_map.get(box_id) if box_id is not None else None,
-            actor=current_actor.get(),
-        )
-        await append_audit_event(event)
-        return
-
-    async with AsyncSessionLocal() as session:
-        comp_repo = repos.CompetitionRepository(session)
-        event_repo = repos.EventRepository(session)
-        comp = await comp_repo.get_by_name("Runtime Default")
-        if not comp:
-            comp = await comp_repo.create(name="Runtime Default")
-            await session.flush()
-
-        actor = current_actor.get() or {}
-        await event_repo.log_event(
-            competition_id=comp.id,
-            action=action,
-            payload=payload,
-            box_id=None,
-            session_id=None,
-            box_version=0,
-            action_id=payload.get("actionId") if isinstance(payload, dict) else None,
-            actor_username=actor.get("username"),
-            actor_role=actor.get("role"),
-            actor_ip=actor.get("ip"),
-            actor_user_agent=actor.get("user_agent"),
-        )
-        await session.commit()
-
+    """Persist an audit event that doesn't mutate box state (best-effort, JSON-only)."""
+    box_id = payload.get("boxId") if isinstance(payload, dict) else None
+    event = build_audit_event(
+        action=action,
+        payload=payload if isinstance(payload, dict) else {},
+        box_id=box_id,
+        state=state_map.get(box_id) if box_id is not None else None,
+        actor=current_actor.get(),
+    )
+    await append_audit_event(event)
 
 def _default_state(session_id: str | None = None) -> dict:
     """Backward-compatible alias for tests."""
     return default_state(session_id)
-
 
 def _parse_timer_preset(preset: str | None) -> int | None:
     """Backward-compatible alias for tests."""

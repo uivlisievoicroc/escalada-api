@@ -1,0 +1,11 @@
+{
+    "python.defaultInterpreterPath": "/Users/silviucorciovei/Library/Caches/pypoetry/virtualenvs/escalada-api-R6B_SwV5-py3.13/bin/python",
+    "python.terminal.useEnvFile": true,
+    "python-envs.pythonProjects": [
+        {
+            "path": "",
+            "envManager": "ms-python.python:poetry",
+            "packageManager": "ms-python.python:poetry"
+        }
+    ]
+}
