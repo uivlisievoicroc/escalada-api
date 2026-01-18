@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 # Load .env early for CORS settings
 load_dotenv()
 
+_jwt_secret = os.getenv("JWT_SECRET")
+if not _jwt_secret or _jwt_secret == "dev-secret-change-me":
+    logger.warning(
+        "JWT_SECRET is missing or uses the default value; set a strong JWT_SECRET in the environment for production."
+    )
+
 BACKUP_INTERVAL_MIN = int(os.getenv("BACKUP_INTERVAL_MIN", "10"))
 BACKUP_RETENTION_FILES = int(os.getenv("BACKUP_RETENTION_FILES", "20"))
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")

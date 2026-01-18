@@ -43,10 +43,28 @@ def _normalize_times(raw_times: dict[str, list[Any]] | None) -> dict[str, list[i
     return normalized
 
 
+def _normalize_clubs(raw_clubs: dict[str, Any] | None) -> dict[str, str]:
+    clubs = raw_clubs or {}
+    normalized: dict[str, str] = {}
+    for name, club in clubs.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if club is None:
+            continue
+        if not isinstance(club, str):
+            club = str(club)
+        club = club.strip()
+        if not club:
+            continue
+        normalized[name] = club
+    return normalized
+
+
 def _build_route_df(
     *,
     scores: dict[str, list[float]],
     times: dict[str, list[int | None]],
+    clubs: dict[str, str],
     route_index: int,
     use_time_tiebreak: bool,
 ) -> pd.DataFrame:
@@ -103,6 +121,7 @@ def _build_route_df(
         row: dict[str, Any] = {
             "Rank": ranks[idx],
             "Name": name,
+            "Club": clubs.get(name, ""),
             "Score": score,
             "Points": points.get(name),
         }
@@ -130,6 +149,23 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
     raw_times = snapshot.get("times") or {}
     times = _normalize_times(raw_times if isinstance(raw_times, dict) else {})
 
+    clubs = _normalize_clubs(snapshot.get("clubs") if isinstance(snapshot.get("clubs"), dict) else {})
+    if not clubs:
+        competitors = snapshot.get("competitors") or []
+        if isinstance(competitors, list):
+            for comp in competitors:
+                if not isinstance(comp, dict):
+                    continue
+                name = comp.get("nume") or comp.get("name")
+                club = comp.get("club")
+                if (
+                    isinstance(name, str)
+                    and name.strip()
+                    and isinstance(club, str)
+                    and club.strip()
+                ):
+                    clubs[name] = club.strip()
+
     route_count = _route_count_from_snapshot(snapshot)
     if route_count <= 0:
         raise ValueError("missing_routes_count")
@@ -143,8 +179,8 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
         scores=scores,
         times=times,
         use_time_tiebreak=use_time,
-        clubs={},
-        include_clubs=False,
+        clubs=clubs,
+        include_clubs=bool(clubs),
     )
 
     with TemporaryDirectory() as tmp:
@@ -162,6 +198,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
             df_route = _build_route_df(
                 scores=scores,
                 times=times,
+                clubs=clubs,
                 route_index=r,
                 use_time_tiebreak=use_time,
             )
@@ -177,6 +214,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
             "categorie": snapshot.get("categorie"),
             "routesCount": route_count,
             "timeCriterionEnabled": bool(snapshot.get("timeCriterionEnabled")),
+            "clubs": clubs,
             "exportedAt": exported_at,
         }
         metadata_path = tmp_dir / "metadata.json"

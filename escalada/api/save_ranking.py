@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -47,6 +47,23 @@ from escalada.auth.deps import require_role
 
 router = APIRouter()
 
+def _safe_category_dir(category: str) -> Path:
+    """
+    Build a safe category directory under `escalada/clasamente`.
+    Preserves diacritics/spaces, but blocks path traversal and separators.
+    """
+    cat = (category or "").strip()
+    if not cat or cat in {".", ".."}:
+        raise HTTPException(status_code=400, detail="invalid_categorie")
+    if "/" in cat or "\\" in cat or ".." in cat:
+        raise HTTPException(status_code=400, detail="invalid_categorie")
+
+    base_dir = Path("escalada/clasamente").resolve()
+    candidate = (base_dir / cat).resolve()
+    if base_dir not in candidate.parents:
+        raise HTTPException(status_code=400, detail="invalid_categorie")
+    return candidate
+
 
 class RankingIn(BaseModel):
     categorie: str
@@ -61,7 +78,7 @@ class RankingIn(BaseModel):
 
 @router.post("/save_ranking")
 def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
-    cat_dir = Path("escalada/clasamente") / payload.categorie
+    cat_dir = _safe_category_dir(payload.categorie)
     cat_dir.mkdir(parents=True, exist_ok=True)
     raw_times = payload.times or {}
     # normalize toate timpiile la secunde (int) sau None

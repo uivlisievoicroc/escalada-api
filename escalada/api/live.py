@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 # state per boxId
 from contextvars import ContextVar
@@ -31,6 +32,7 @@ from escalada.auth.service import decode_token
 from escalada.storage.json_store import (
     append_audit_event,
     build_audit_event,
+    clear_box_state_files,
     ensure_storage_dirs,
     load_box_states,
     save_box_state,
@@ -54,6 +56,9 @@ VALIDATION_ENABLED = True
 
 async def preload_states_from_json() -> int:
     ensure_storage_dirs()
+    if os.getenv("RESET_BOXES_ON_START", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        removed = clear_box_state_files()
+        logger.warning("RESET_BOXES_ON_START enabled: deleted %s box state files", removed)
     states = load_box_states()
     loaded = 0
     async with init_lock:
@@ -82,6 +87,8 @@ class Cmd(BaseModel):
     competitor: str | None = None
     registeredTime: float | None = None
     competitorIdx: int | None = None
+    # alias for competitorIdx (0-based)
+    idx: int | None = None
 
     # for INIT_ROUTE
     routeIndex: int | None = None

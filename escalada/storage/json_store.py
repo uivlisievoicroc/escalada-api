@@ -54,6 +54,22 @@ def ensure_storage_dirs() -> None:
     _boxes_dir().mkdir(parents=True, exist_ok=True)
 
 
+def clear_box_state_files() -> int:
+    """
+    Delete all persisted box state JSON files (data/boxes/*.json).
+    Returns the number of deleted files.
+    """
+    ensure_storage_dirs()
+    removed = 0
+    for path in _boxes_dir().glob("*.json"):
+        try:
+            path.unlink()
+            removed += 1
+        except Exception as exc:
+            logger.warning("Failed to delete box state file %s: %s", path, exc)
+    return removed
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(
@@ -218,4 +234,3 @@ def build_audit_event(
         "actorUserAgent": (actor or {}).get("user_agent"),
         "payload": payload if isinstance(payload, dict) else {},
     }
-

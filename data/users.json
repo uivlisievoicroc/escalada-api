@@ -21,25 +21,25 @@
   },
   "Box 0": {
     "username": "Box 0",
-    "password_hash": "$pbkdf2-sha256$29000$9f6/t1ZqLYWQ0tp7TwkBoA$6.lBAm3wnH7j1DHXK8Jj..sAKXhZdSMBFC1JAjXK6/E",
+    "password_hash": "$pbkdf2-sha256$29000$ZazVGkNobW2tdc65d24tZQ$tEp6akDFGXpm9gX0im.LiMopj3Z3L6AReaiuqnsePMA",
     "role": "judge",
     "assigned_boxes": [
       0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-01-11T19:07:40.187319+00:00"
+    "updated_at": "2026-01-18T08:25:57.544511+00:00"
   },
   "0": {
     "username": "0",
-    "password_hash": "$pbkdf2-sha256$29000$9f6/t1ZqLYWQ0tp7TwkBoA$6.lBAm3wnH7j1DHXK8Jj..sAKXhZdSMBFC1JAjXK6/E",
+    "password_hash": "$pbkdf2-sha256$29000$ZazVGkNobW2tdc65d24tZQ$tEp6akDFGXpm9gX0im.LiMopj3Z3L6AReaiuqnsePMA",
     "role": "judge",
     "assigned_boxes": [
       0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-01-11T19:07:40.187319+00:00"
+    "updated_at": "2026-01-18T08:25:57.544511+00:00"
   },
   "12": {
     "username": "12",
@@ -95,5 +95,27 @@
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
     "updated_at": "2026-01-11T19:07:55.039383+00:00"
+  },
+  "p": {
+    "username": "p",
+    "password_hash": "$pbkdf2-sha256$29000$JQSA8D5nDGHMeQ/BmDOm1A$l6pp7PV2TNE3JT7YYU3wkL9xmPXZXmtMhML8YbUtufc",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-18T08:18:07.309981+00:00"
+  },
+  "b": {
+    "username": "b",
+    "password_hash": "$pbkdf2-sha256$29000$ZazVGkNobW2tdc65d24tZQ$tEp6akDFGXpm9gX0im.LiMopj3Z3L6AReaiuqnsePMA",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-01-18T08:25:57.544511+00:00"
   }
 }

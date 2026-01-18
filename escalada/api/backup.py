@@ -24,6 +24,16 @@ router = APIRouter()
 def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
     scores = state.get("scores", {})
     times = state.get("times", {})
+    comps_state = state.get("competitors") or []
+    clubs: Dict[str, str] = {}
+    if isinstance(comps_state, list):
+        for comp in comps_state:
+            if not isinstance(comp, dict):
+                continue
+            name = comp.get("nume") or comp.get("name")
+            club = comp.get("club")
+            if isinstance(name, str) and name.strip() and isinstance(club, str) and club.strip():
+                clubs[name] = club.strip()
     snapshot = {
         "boxId": box_id,
         "competitionId": None,
@@ -38,6 +48,7 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
         "holdCount": state.get("holdCount", 0.0),
         "competitors": state.get("competitors", []),
         "categorie": state.get("categorie", ""),
+        "clubs": clubs,
         "registeredTime": state.get("lastRegisteredTime"),
         "remaining": state.get("remaining"),
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
@@ -54,7 +65,6 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
         snapshot["routesCount"] = state.get("routeIndex") or 1
 
     if not snapshot.get("competitorsAll"):
-        comps_state = state.get("competitors") or []
         for idx, comp in enumerate(comps_state):
             if not isinstance(comp, dict):
                 continue
@@ -63,6 +73,7 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
                     "id": None,
                     "name": comp.get("nume") or comp.get("name") or f"comp_{idx}",
                     "category": comp.get("categorie") or comp.get("category"),
+                    "club": comp.get("club") if isinstance(comp.get("club"), str) else None,
                     "bib": comp.get("bib"),
                     "boxId": box_id,
                 }
@@ -78,8 +89,8 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
                     {
                         "scores": scores,
                         "route_count": route_count,
-                        "clubs": {},
-                        "include_clubs": False,
+                        "clubs": clubs,
+                        "include_clubs": bool(clubs),
                         "times": times,
                         "use_time_tiebreak": bool(snapshot.get("timeCriterionEnabled")),
                     },
