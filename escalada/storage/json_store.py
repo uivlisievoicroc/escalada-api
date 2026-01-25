@@ -16,6 +16,9 @@ _box_locks: Dict[int, asyncio.Lock] = {}
 _box_locks_lock = asyncio.Lock()
 _audit_lock = asyncio.Lock()
 
+# Audit file rotation settings
+MAX_AUDIT_FILE_SIZE_MB = int(os.getenv("MAX_AUDIT_FILE_SIZE_MB", "50"))
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,11 +117,30 @@ async def save_box_state(box_id: int, state: dict) -> None:
         _atomic_write_json(path, payload)
 
 
+def _rotate_audit_file_if_needed() -> None:
+    """Rotate audit file if it exceeds MAX_AUDIT_FILE_SIZE_MB."""
+    path = _events_path()
+    if not path.exists():
+        return
+    try:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if size_mb >= MAX_AUDIT_FILE_SIZE_MB:
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            archive_name = f"events.{timestamp}.ndjson"
+            archive_path = path.parent / archive_name
+            path.rename(archive_path)
+            logger.info("Rotated audit file to %s (was %.2f MB)", archive_name, size_mb)
+    except Exception as exc:
+        logger.warning("Failed to rotate audit file: %s", exc)
+
+
 async def append_audit_event(event: dict) -> None:
     ensure_storage_dirs()
     line = json.dumps(event, ensure_ascii=False)
     async with _audit_lock:
         try:
+            # Check rotation before appending
+            _rotate_audit_file_if_needed()
             with _events_path().open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
         except Exception as exc:

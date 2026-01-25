@@ -1,15 +1,43 @@
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 
 from escalada.auth.service import decode_token
 
+# Cookie name must match auth.py
+COOKIE_NAME = "escalada_token"
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
-async def get_current_claims(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
+async def get_token_from_request(
+    request: Request,
+    header_token: Optional[str] = Depends(oauth2_scheme),
+) -> str:
+    """
+    Extract JWT token from:
+    1. Authorization header (Bearer token) - for backwards compatibility
+    2. httpOnly cookie - preferred for XSS protection
+    """
+    # Try Authorization header first (backwards compatible)
+    if header_token:
+        return header_token
+
+    # Fallback to httpOnly cookie
+    cookie_token = request.cookies.get(COOKIE_NAME)
+    if cookie_token:
+        return cookie_token
+
+    # No token found
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="not_authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def get_current_claims(token: str = Depends(get_token_from_request)) -> Dict[str, Any]:
     return decode_token(token)
 
 

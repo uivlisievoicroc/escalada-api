@@ -1,9 +1,10 @@
 import logging
+import os
 import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
 from escalada.auth.deps import get_current_claims, require_role
@@ -13,6 +14,12 @@ from escalada.storage.json_store import get_users_with_default_admin, save_users
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Cookie settings - secure in production
+COOKIE_NAME = "escalada_token"
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() in ("true", "1", "yes")
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")  # "strict", "lax", or "none"
+COOKIE_MAX_AGE = 60 * 60 * 24  # 24 hours
 
 
 def _canonical_username(username: str) -> str:
@@ -39,7 +46,7 @@ class TokenResponse(BaseModel):
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-async def login(payload: LoginRequest) -> TokenResponse:
+async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     users = get_users_with_default_admin()
     requested = payload.username
     canonical = _canonical_username(requested)
@@ -82,7 +89,33 @@ async def login(payload: LoginRequest) -> TokenResponse:
         role=role,
         assigned_boxes=boxes,
     )
+
+    # Set httpOnly cookie for enhanced XSS protection
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+    )
+
+    # Also return token in body for backwards compatibility with existing clients
     return TokenResponse(access_token=token, role=role, boxes=boxes)
+
+
+@router.post("/auth/logout")
+async def logout(response: Response):
+    """Clear the auth cookie to log out the user."""
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+    )
+    return {"status": "logged_out"}
 
 
 @router.get("/auth/me")

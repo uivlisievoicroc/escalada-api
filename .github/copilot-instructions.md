@@ -3,11 +3,13 @@
 ## Big picture
 - FastAPI backend that persists contest state and broadcasts real-time updates.
 - All contest/business logic comes from the separate package `escalada-core`.
+- **JSON-only storage** (no Postgres/Docker): box states in `STORAGE_DIR/boxes/*.json`, audit events in `STORAGE_DIR/events.ndjson`.
 
 ## Key entrypoints
 - App + startup tasks: `escalada/main.py`
-  - Startup runs `run_migrations()`, calls `preload_states_from_db()`, then starts periodic backups.
+  - Startup calls `preload_states()` (loads JSON box states from disk), then starts periodic backups.
   - Backup loop is controlled by `BACKUP_INTERVAL_MIN`, `BACKUP_RETENTION_FILES`, `BACKUP_DIR`.
+  - Optional: `RESET_BOXES_ON_START=1` to clear all box states on startup (see `escalada/api/live.py`).
 
 ## Live state + commands (critical)
 - `escalada/api/live.py` is the “source of truth” runtime layer:
@@ -22,7 +24,9 @@
 - Heartbeat: server sends `PING`; clients reply `PONG`. WS also accepts `REQUEST_STATE`.
 
 ## Persistence & audit
-- DB models: `escalada/db/models.py` (`Box.state` JSONB, `box_version`, `session_id`; `Event` audit rows with dedupe on `(box_id, action_id)`).
+- Storage layer: `escalada/storage/json_store.py` (JSON-only; Postgres/Alembic removed).
+- Box states: `STORAGE_DIR/boxes/{boxId}.json` (contains `state` dict, `box_version`, `session_id`).
+- Audit events: `STORAGE_DIR/events.ndjson` (one JSON object per line; dedupe on `box_id` + `action_id`).
 - Snapshot/backup/export/restore: `escalada/api/backup.py`.
 - Admin upload (Excel → listbox shape): `escalada/routers/upload.py`.
 - Role/box authorization: `escalada/auth/deps.py` (HTTP uses OAuth2 bearer; WS uses token query param).

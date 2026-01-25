@@ -317,10 +317,10 @@ async def restore_backup(payload: RestoreRequest, claims=Depends(require_role(["
 
 
 async def collect_snapshots() -> List[Dict[str, Any]]:
-    """Collect snapshots for all boxes from in-memory state_map."""
-
+    """Collect snapshots for all boxes from in-memory state_map (thread-safe)."""
+    states = await live.get_all_states_snapshot()
     snapshots: List[Dict[str, Any]] = []
-    for box_id, state in live.state_map.items():
+    for box_id, state in states.items():
         snapshots.append(_snapshot_from_state(int(box_id), state))
     return snapshots
 

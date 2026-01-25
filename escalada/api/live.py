@@ -72,6 +72,14 @@ async def preload_states_from_json() -> int:
 
 async def preload_states() -> int:
     return await preload_states_from_json()
+
+
+async def get_all_states_snapshot() -> Dict[int, dict]:
+    """Return a thread-safe shallow copy of all states for backup/export operations."""
+    async with init_lock:
+        return {box_id: dict(state) for box_id, state in state_map.items()}
+
+
 class Cmd(BaseModel):
     """Legacy Cmd model - use ValidatedCmd for new validation"""
 
@@ -402,7 +410,8 @@ async def _send_public_snapshot(targets: set[WebSocket] | None = None) -> None:
         await _broadcast_public(payload)
 
 async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
-    state = state_map.get(box_id)
+    async with init_lock:
+        state = state_map.get(box_id)
     if not state:
         return
     payload = {
@@ -440,7 +449,13 @@ def _authorize_ws(box_id: int, claims: dict) -> bool:
 @router.websocket("/ws/{box_id}")
 async def websocket_endpoint(ws: WebSocket, box_id: int):
     peer = ws.client.host if ws.client else None
+
+    # Try to get token from query params first (backwards compatible), then from cookie
     token = ws.query_params.get("token")
+    if not token:
+        # Try httpOnly cookie
+        token = ws.cookies.get("escalada_token")
+
     if not token:
         logger.warning("WS connect denied: token_required box=%s ip=%s", box_id, peer)
         await ws.close(code=4401, reason="token_required")
@@ -626,14 +641,13 @@ async def get_state(box_id: int, claims=Depends(require_view_box_access())):
     Return current contest state for a judge client.
     Create a placeholder state with sessionId if box doesn't exist yet.
     """
-    # ==================== ATOMIC STATE INITIALIZATION ====================
-    # Use global init_lock to prevent race conditions
+    # ==================== ATOMIC STATE ACCESS ====================
+    # Use global init_lock to prevent race conditions during state access
     async with init_lock:
         if box_id not in state_locks:
             state_locks[box_id] = asyncio.Lock()
-    await _ensure_state(box_id)
 
-    state = state_map[box_id]
+    state = await _ensure_state(box_id)
     return _build_snapshot(box_id, state)
 
 # helpers
@@ -663,13 +677,8 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
     }
 
 async def _send_state_snapshot(box_id: int, targets: set[WebSocket] | None = None):
-    # Ensure state exists before sending snapshot
-    async with init_lock:
-        if box_id not in state_locks:
-            state_locks[box_id] = asyncio.Lock()
-    await _ensure_state(box_id)
-
-    state = state_map.get(box_id)
+    # Ensure state exists and get a copy atomically
+    state = await _ensure_state(box_id)
     if state is None:
         return
     payload = _build_snapshot(box_id, state)

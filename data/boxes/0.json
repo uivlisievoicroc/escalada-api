@@ -1,6 +1,6 @@
 {
   "initiated": false,
-  "holdsCount": 11,
+  "holdsCount": 21,
   "currentClimber": "",
   "preparingClimber": "",
   "started": false,
@@ -16,8 +16,8 @@
   "timerPreset": null,
   "timerPresetSec": null,
   "timeCriterionEnabled": false,
-  "sessionId": "e62941a3-2c6b-4a46-96ae-68c1eb6a9eae",
-  "boxVersion": 4,
+  "sessionId": "1f7a3c97-bd4b-488d-9604-86df2e680288",
+  "boxVersion": 51,
   "scores": {},
   "times": {}
 }
