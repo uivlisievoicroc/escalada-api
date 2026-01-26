@@ -22,6 +22,10 @@ router = APIRouter()
 
 
 def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
+    remaining = state.get("remaining")
+    if live._server_side_timer_enabled():
+        remaining = live._compute_remaining(state, live._now_ms())
+
     scores = state.get("scores", {})
     times = state.get("times", {})
     comps_state = state.get("competitors") or []
@@ -50,7 +54,7 @@ def _snapshot_from_state(box_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
         "categorie": state.get("categorie", ""),
         "clubs": clubs,
         "registeredTime": state.get("lastRegisteredTime"),
-        "remaining": state.get("remaining"),
+        "remaining": remaining,
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
         "timerPreset": state.get("timerPreset"),
         "timerPresetSec": state.get("timerPresetSec"),

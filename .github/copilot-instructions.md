@@ -8,8 +8,8 @@
 ## Key entrypoints
 - App + startup tasks: `escalada/main.py`
   - Startup calls `preload_states()` (loads JSON box states from disk), then starts periodic backups.
-  - Backup loop is controlled by `BACKUP_INTERVAL_MIN`, `BACKUP_RETENTION_FILES`, `BACKUP_DIR`.
-  - Optional: `RESET_BOXES_ON_START=1` to clear all box states on startup (see `escalada/api/live.py`).
+  - Backup loop is controlled by `BACKUP_INTERVAL_MIN` (default 10), `BACKUP_RETENTION_FILES` (default 20), `BACKUP_DIR` (default `backups`).
+  - Startup default: clears all persisted box states on startup (fresh start). To **keep** state across restarts, set `RESET_BOXES_ON_START=0` (see `escalada/api/live.py`).
 
 ## Live state + commands (critical)
 - `escalada/api/live.py` is the “source of truth” runtime layer:
@@ -23,6 +23,13 @@
 - Requires `token` query param (JWT); immediately sends a `STATE_SNAPSHOT`.
 - Heartbeat: server sends `PING`; clients reply `PONG`. WS also accepts `REQUEST_STATE`.
 
+## Public spectator API (read-only)
+- Router: `escalada/api/public.py` under `/api/public/*`.
+- Token: `POST /api/public/token` → spectator JWT with 24h TTL (no credentials required).
+- Boxes list: `GET /api/public/boxes?token=...` → only returns **initiated** boxes.
+- WS per box: `WS /api/public/ws/{boxId}?token=...` → sends `STATE_SNAPSHOT`, accepts only `PONG`/`REQUEST_STATE`.
+- Role `spectator` is blocked from `/api/cmd` and private WS endpoints.
+
 ## Persistence & audit
 - Storage layer: `escalada/storage/json_store.py` (JSON-only; Postgres/Alembic removed).
 - Box states: `STORAGE_DIR/boxes/{boxId}.json` (contains `state` dict, `box_version`, `session_id`).
@@ -33,6 +40,6 @@
 
 ## Dev workflow
 - Install core in editable mode: `poetry run pip install -e ../escalada-core`.
-- Run API: `poetry run uvicorn escalada.main:app --reload --host 0.0.0.0 --port 8000`.
+- Run API: `poetry run uvicorn escalada.main:app --reload --host 0.0.0.0 --port 8000` (use `--workers 1` for JSON mode).
 - Tests: `poetry run pytest tests -q`.
-- Formatting: `poetry run pre-commit run --all-files`.
+- Formatting: `poetry run pre-commit run --all-files` (Black + isort).

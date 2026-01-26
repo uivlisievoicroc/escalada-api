@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 # state per boxId
 from contextvars import ContextVar
@@ -54,11 +55,99 @@ public_channels_lock = asyncio.Lock()
 # Test mode - disable validation for backward compatibility
 VALIDATION_ENABLED = True
 
+
+def _server_side_timer_enabled() -> bool:
+    value = os.getenv("SERVER_SIDE_TIMER", "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _compute_remaining(state: dict, now_ms: int) -> float | None:
+    ends_at = state.get("timerEndsAtMs")
+    if isinstance(ends_at, (int, float)):
+        remaining = (float(ends_at) - now_ms) / 1000.0
+        return max(0.0, remaining)
+
+    remaining = state.get("timerRemainingSec")
+    if isinstance(remaining, (int, float)):
+        return max(0.0, float(remaining))
+
+    legacy = state.get("remaining")
+    if isinstance(legacy, (int, float)):
+        return max(0.0, float(legacy))
+
+    preset = state.get("timerPresetSec")
+    if isinstance(preset, (int, float)):
+        return max(0.0, float(preset))
+
+    return None
+
+
+def _apply_server_side_timer(state: dict, cmd_payload: dict, now_ms: int) -> None:
+    cmd_type = cmd_payload.get("type")
+
+    if cmd_type == "INIT_ROUTE":
+        preset = state.get("timerPresetSec")
+        if preset is None:
+            preset = parse_timer_preset(cmd_payload.get("timerPreset"))
+        state["timerRemainingSec"] = float(preset) if isinstance(preset, (int, float)) else None
+        state["timerEndsAtMs"] = None
+        return
+
+    if cmd_type in {"START_TIMER", "RESUME_TIMER"}:
+        remaining = _compute_remaining(state, now_ms)
+        if remaining is None:
+            state["timerEndsAtMs"] = None
+            return
+        state["timerRemainingSec"] = float(remaining)
+        state["timerEndsAtMs"] = int(now_ms + remaining * 1000.0)
+        return
+
+    if cmd_type == "STOP_TIMER":
+        ends_at = state.get("timerEndsAtMs")
+        remaining = None
+        if isinstance(ends_at, (int, float)):
+            remaining = max(0.0, (float(ends_at) - now_ms) / 1000.0)
+        elif isinstance(state.get("timerRemainingSec"), (int, float)):
+            remaining = float(state.get("timerRemainingSec"))
+        elif isinstance(cmd_payload.get("remaining"), (int, float)):
+            remaining = float(cmd_payload.get("remaining"))
+        state["timerRemainingSec"] = remaining
+        state["timerEndsAtMs"] = None
+        return
+
+    if cmd_type == "TIMER_SYNC":
+        if isinstance(cmd_payload.get("remaining"), (int, float)):
+            remaining = float(cmd_payload.get("remaining"))
+            state["timerRemainingSec"] = remaining
+            if state.get("timerState") == "running":
+                state["timerEndsAtMs"] = int(now_ms + remaining * 1000.0)
+            else:
+                state["timerEndsAtMs"] = None
+        return
+
+    if cmd_type in {"SUBMIT_SCORE", "RESET_BOX"}:
+        preset = state.get("timerPresetSec")
+        state["timerRemainingSec"] = float(preset) if isinstance(preset, (int, float)) else None
+        state["timerEndsAtMs"] = None
+        return
+
 async def preload_states_from_json() -> int:
     ensure_storage_dirs()
-    if os.getenv("RESET_BOXES_ON_START", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+
+    # Default behavior: start clean on every launch.
+    # Opt-out (resume previous contest state) by setting RESET_BOXES_ON_START=0/false/no.
+    reset_env = os.getenv("RESET_BOXES_ON_START", "").strip().lower()
+    should_reset = reset_env not in {"0", "false", "no", "n", "off"}
+    if should_reset:
         removed = clear_box_state_files()
-        logger.warning("RESET_BOXES_ON_START enabled: deleted %s box state files", removed)
+        logger.warning(
+            "Starting clean: deleted %s box state files (set RESET_BOXES_ON_START=0 to keep state)",
+            removed,
+        )
     states = load_box_states()
     loaded = 0
     async with init_lock:
@@ -243,8 +332,9 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
                 return {"status": "ok"}
 
             outcome = apply_command(sm, cmd.model_dump())
-            sm = outcome.state
             cmd_payload = outcome.cmd_payload
+            if _server_side_timer_enabled():
+                _apply_server_side_timer(sm, cmd_payload, _now_ms())
 
             # Persist snapshot + audit log for state-changing commands
             persist_result = "ok"
@@ -356,6 +446,9 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
     holds_counts = state.get("holdsCounts") or []
     if not isinstance(holds_counts, list):
         holds_counts = []
+    remaining = state.get("remaining")
+    if _server_side_timer_enabled():
+        remaining = _compute_remaining(state, _now_ms())
     return {
         "boxId": box_id,
         "categorie": state.get("categorie", ""),
@@ -367,7 +460,7 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
         "currentClimber": state.get("currentClimber", ""),
         "preparingClimber": (state.get("preparingClimber") or _public_preparing_climber(state)),
         "timerState": state.get("timerState", "idle"),
-        "remaining": state.get("remaining"),
+        "remaining": remaining,
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
         "scoresByName": state.get("scores") or {},
         "timesByName": state.get("times") or {},
@@ -419,6 +512,13 @@ async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
         "box": _build_public_box_state(box_id, state),
     }
     await _broadcast_public(payload)
+    
+    # Also broadcast to per-box public spectators (token-authenticated)
+    try:
+        from escalada.api.public import broadcast_to_public_box, _send_public_box_snapshot
+        await _send_public_box_snapshot(box_id)
+    except ImportError:
+        pass
 
 def _public_update_type(cmd_type: str) -> str | None:
     return {
@@ -652,6 +752,9 @@ async def get_state(box_id: int, claims=Depends(require_view_box_access())):
 
 # helpers
 def _build_snapshot(box_id: int, state: dict) -> dict:
+    remaining = state.get("remaining")
+    if _server_side_timer_enabled():
+        remaining = _compute_remaining(state, _now_ms())
     return {
         "type": "STATE_SNAPSHOT",
         "boxId": box_id,
@@ -668,7 +771,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "competitors": state.get("competitors", []),
         "categorie": state.get("categorie", ""),
         "registeredTime": state.get("lastRegisteredTime"),
-        "remaining": state.get("remaining"),
+        "remaining": remaining,
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
         "timerPreset": state.get("timerPreset"),
         "timerPresetSec": state.get("timerPresetSec"),

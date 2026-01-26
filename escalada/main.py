@@ -16,6 +16,7 @@ from escalada.api.auth import router as auth_router
 from escalada.api.backup import collect_snapshots, router as backup_router, write_backup_file
 from escalada.api.health import router as health_router
 from escalada.api.live import router as live_router
+from escalada.api.public import router as public_router
 from escalada.api.ops import router as ops_router
 from escalada.api.podium import router as podium_router
 from escalada.api.save_ranking import router as save_ranking_router
@@ -173,6 +174,7 @@ app.include_router(upload_router, prefix="/api")
 app.include_router(save_ranking_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(live_router, prefix="/api")
+app.include_router(public_router, prefix="/api")
 app.include_router(podium_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(backup_router, prefix="/api/admin")

@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from escalada.api.live import Cmd, cmd, state_map, state_locks
 from escalada.api import live as live_module
@@ -129,6 +130,50 @@ class TimerCommandsTest(BaseTestCase):
             return state_map[1]
         state = asyncio.run(scenario())
         self.assertEqual(state["remaining"], 45.5)
+
+
+class ServerSideTimerTest(BaseTestCase):
+    def setUp(self):
+        state_map.clear()
+        state_locks.clear()
+
+    def test_server_side_timer_flow(self):
+        async def scenario():
+            with patch.object(live_module, "_server_side_timer_enabled", return_value=True):
+                with patch.object(live_module, "_now_ms", return_value=0):
+                    await cmd(
+                        Cmd(
+                            boxId=1,
+                            type="INIT_ROUTE",
+                            routeIndex=1,
+                            holdsCount=10,
+                            competitors=[{"nume": "Alex"}],
+                            timerPreset="01:00",
+                        )
+                    )
+                init_state = dict(state_map[1])
+
+                with patch.object(live_module, "_now_ms", return_value=0):
+                    await cmd(Cmd(boxId=1, type="START_TIMER"))
+                started_state = dict(state_map[1])
+
+                with patch.object(live_module, "_now_ms", return_value=30000):
+                    await cmd(Cmd(boxId=1, type="STOP_TIMER"))
+                stopped_state = dict(state_map[1])
+
+                with patch.object(live_module, "_now_ms", return_value=40000):
+                    await cmd(Cmd(boxId=1, type="RESUME_TIMER"))
+                resumed_state = dict(state_map[1])
+
+                return init_state, started_state, stopped_state, resumed_state
+
+        init_state, started_state, stopped_state, resumed_state = asyncio.run(scenario())
+        self.assertAlmostEqual(init_state.get("timerRemainingSec"), 60.0, delta=0.01)
+        self.assertIsNone(init_state.get("timerEndsAtMs"))
+        self.assertEqual(started_state.get("timerEndsAtMs"), 60000)
+        self.assertAlmostEqual(stopped_state.get("timerRemainingSec"), 30.0, delta=0.1)
+        self.assertIsNone(stopped_state.get("timerEndsAtMs"))
+        self.assertEqual(resumed_state.get("timerEndsAtMs"), 70000)
 
 
 # ==================== PROGRESS UPDATE TESTS ====================

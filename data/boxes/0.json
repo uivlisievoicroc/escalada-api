@@ -1,23 +1,50 @@
 {
-  "initiated": false,
-  "holdsCount": 21,
-  "currentClimber": "",
+  "initiated": true,
+  "holdsCount": 11,
+  "currentClimber": "Nechifor Ema",
   "preparingClimber": "",
   "started": false,
   "timerState": "idle",
   "holdCount": 0.0,
   "routeIndex": 1,
   "routesCount": 1,
-  "holdsCounts": [],
-  "competitors": [],
-  "categorie": "",
+  "holdsCounts": [
+    11
+  ],
+  "competitors": [
+    {
+      "nume": "Ghiurka Éva",
+      "marked": true,
+      "club": "6C Plus"
+    },
+    {
+      "nume": "Chiorean Evelin",
+      "marked": true,
+      "club": "CS LINX CLUB"
+    },
+    {
+      "nume": "Nechifor Ema",
+      "marked": false,
+      "club": "ACS Adrenalin"
+    }
+  ],
+  "categorie": "1",
   "lastRegisteredTime": null,
-  "remaining": null,
-  "timerPreset": null,
-  "timerPresetSec": null,
+  "remaining": 420.0,
+  "timerPreset": "07:00",
+  "timerPresetSec": 420,
+  "timerRemainingSec": null,
+  "timerEndsAtMs": null,
   "timeCriterionEnabled": false,
-  "sessionId": "1f7a3c97-bd4b-488d-9604-86df2e680288",
-  "boxVersion": 51,
-  "scores": {},
+  "sessionId": "7491fcad-9746-45a7-914a-d7b964633d2c",
+  "boxVersion": 24,
+  "scores": {
+    "Ghiurka Éva": [
+      4.0
+    ],
+    "Chiorean Evelin": [
+      3.0
+    ]
+  },
   "times": {}
 }

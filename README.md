@@ -7,6 +7,7 @@ Real-time climbing competition management backend using FastAPI + WebSockets.
 This repo runs in **JSON storage mode only** (no Postgres/Docker).
 
 - Optional: `STORAGE_DIR=./data` (default: `data`)
+- Startup behavior: by default, the server starts **clean** (clears persisted box states). To keep state across restarts, set `RESET_BOXES_ON_START=0`.
 - Run a single worker: `--workers 1`
 
 ## Quick Start
@@ -16,6 +17,8 @@ poetry install
 poetry run pip install -e ../escalada-core
 
 export STORAGE_DIR=./data
+# Optional: keep state across restarts
+# export RESET_BOXES_ON_START=0
 poetry run uvicorn escalada.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
