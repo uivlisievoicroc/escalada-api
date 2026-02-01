@@ -57,8 +57,15 @@ VALIDATION_ENABLED = True
 
 
 def _server_side_timer_enabled() -> bool:
+    """
+    Server is authoritative for the countdown by default.
+
+    Set SERVER_SIDE_TIMER=0/false/no to opt-out (legacy client-driven TIMER_SYNC).
+    """
     value = os.getenv("SERVER_SIDE_TIMER", "").strip().lower()
-    return value in {"1", "true", "yes", "y", "on"}
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    return True
 
 
 def _now_ms() -> int:
@@ -97,6 +104,13 @@ def _apply_server_side_timer(state: dict, cmd_payload: dict, now_ms: int) -> Non
         state["timerEndsAtMs"] = None
         return
 
+    if cmd_type == "RESET_PARTIAL":
+        if cmd_payload.get("resetTimer") or cmd_payload.get("unmarkAll"):
+            preset = state.get("timerPresetSec")
+            state["timerRemainingSec"] = float(preset) if isinstance(preset, (int, float)) else None
+            state["timerEndsAtMs"] = None
+        return
+
     if cmd_type in {"START_TIMER", "RESUME_TIMER"}:
         remaining = _compute_remaining(state, now_ms)
         if remaining is None:
@@ -120,13 +134,14 @@ def _apply_server_side_timer(state: dict, cmd_payload: dict, now_ms: int) -> Non
         return
 
     if cmd_type == "TIMER_SYNC":
+        # When server-side timer is enabled, TIMER_SYNC is treated as best-effort/legacy.
+        # Never let a client "extend" a running timer (UI stalls/spam-clicks used to do that).
+        if state.get("timerState") == "running":
+            return
         if isinstance(cmd_payload.get("remaining"), (int, float)):
             remaining = float(cmd_payload.get("remaining"))
             state["timerRemainingSec"] = remaining
-            if state.get("timerState") == "running":
-                state["timerEndsAtMs"] = int(now_ms + remaining * 1000.0)
-            else:
-                state["timerEndsAtMs"] = None
+            state["timerEndsAtMs"] = None
         return
 
     if cmd_type in {"SUBMIT_SCORE", "RESET_BOX"}:
@@ -524,6 +539,7 @@ def _public_update_type(cmd_type: str) -> str | None:
     return {
         "INIT_ROUTE": "BOX_STATUS_UPDATE",
         "RESET_BOX": "BOX_STATUS_UPDATE",
+        "RESET_PARTIAL": "BOX_STATUS_UPDATE",
         "START_TIMER": "BOX_FLOW_UPDATE",
         "STOP_TIMER": "BOX_FLOW_UPDATE",
         "RESUME_TIMER": "BOX_FLOW_UPDATE",

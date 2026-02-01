@@ -175,6 +175,39 @@ class ServerSideTimerTest(BaseTestCase):
         self.assertIsNone(stopped_state.get("timerEndsAtMs"))
         self.assertEqual(resumed_state.get("timerEndsAtMs"), 70000)
 
+    def test_timer_sync_cannot_extend_running_timer(self):
+        async def scenario():
+            with patch.object(live_module, "_server_side_timer_enabled", return_value=True):
+                with patch.object(live_module, "_now_ms", return_value=0):
+                    await cmd(
+                        Cmd(
+                            boxId=1,
+                            type="INIT_ROUTE",
+                            routeIndex=1,
+                            holdsCount=10,
+                            competitors=[{"nume": "Alex"}],
+                            timerPreset="01:00",
+                        )
+                    )
+                    await cmd(Cmd(boxId=1, type="START_TIMER"))
+                started_state = dict(state_map[1])
+
+                # Simulate a stalled client sending a stale "60s remaining" while the timer is running.
+                with patch.object(live_module, "_now_ms", return_value=10000):
+                    await cmd(Cmd(boxId=1, type="TIMER_SYNC", remaining=60.0))
+                after_sync_state = dict(state_map[1])
+
+                with patch.object(live_module, "_now_ms", return_value=20000):
+                    await cmd(Cmd(boxId=1, type="STOP_TIMER"))
+                stopped_state = dict(state_map[1])
+
+                return started_state, after_sync_state, stopped_state
+
+        started_state, after_sync_state, stopped_state = asyncio.run(scenario())
+        self.assertEqual(started_state.get("timerEndsAtMs"), 60000)
+        self.assertEqual(after_sync_state.get("timerEndsAtMs"), 60000)
+        self.assertAlmostEqual(stopped_state.get("timerRemainingSec"), 40.0, delta=0.1)
+
 
 # ==================== PROGRESS UPDATE TESTS ====================
 class ProgressUpdateTest(BaseTestCase):
