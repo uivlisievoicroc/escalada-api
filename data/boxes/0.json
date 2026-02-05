@@ -1,54 +1,78 @@
 {
   "initiated": true,
-  "holdsCount": 11,
-  "currentClimber": "Alexandru Radu",
-  "preparingClimber": "Nicolici Radu",
+  "holdsCount": 13,
+  "currentClimber": "Cinca Albert",
+  "preparingClimber": "Scutelnicu Ilie Nicolas",
   "started": false,
   "timerState": "idle",
   "holdCount": 0.0,
   "routeIndex": 1,
-  "routesCount": 1,
+  "routesCount": 2,
   "holdsCounts": [
-    11
+    13,
+    21
   ],
   "competitors": [
     {
-      "nume": "Cireap Paul",
+      "nume": "Eric Crișan",
+      "marked": true,
+      "club": "CS LINX CLUB"
+    },
+    {
+      "nume": "Ianc Andrei",
       "marked": true,
       "club": "One Move"
     },
     {
-      "nume": "Leonte Matei",
+      "nume": "Ştiubea Vlad",
       "marked": true,
-      "club": "A.C Repedea"
+      "club": "One Move"
     },
     {
-      "nume": "Alexandru Radu",
+      "nume": "Cinca Albert",
+      "marked": false,
+      "club": "CS alternative TM"
+    },
+    {
+      "nume": "Scutelnicu Ilie Nicolas",
+      "marked": false,
+      "club": "Skai"
+    },
+    {
+      "nume": "Căpățână Arno",
       "marked": false,
       "club": "Știința Politehnica"
     },
     {
-      "nume": "Nicolici Radu",
+      "nume": "Gyurka Erik",
       "marked": false,
-      "club": "One Move"
+      "club": "6 C Plus"
+    },
+    {
+      "nume": "Tarcea Tudor",
+      "marked": false,
+      "club": "CS alternative TM"
     }
   ],
-  "categorie": "2",
+  "categorie": "caz",
   "lastRegisteredTime": null,
-  "remaining": null,
+  "remaining": 300.0,
   "timerPreset": "05:00",
   "timerPresetSec": 300,
   "timerRemainingSec": 300.0,
   "timerEndsAtMs": null,
   "timeCriterionEnabled": false,
-  "sessionId": "0d8cbb23-7f2c-4ece-81cc-f2348c41e45d",
-  "boxVersion": 58,
+  "sessionId": "612e7f16-2fa4-4a45-ae58-ec944cca21ab",
+  "boxVersion": 36,
   "scores": {
-    "Cireap Paul": [
-      11.0
+    "Eric Crișan": [
+      7.0
     ],
-    "Leonte Matei": [
-      8.0
+    "Ianc Andrei": [
+      4.0
+    ],
+    "Ştiubea Vlad": [
+      13.0
     ]
   },
   "times": {}

@@ -209,6 +209,64 @@ class ServerSideTimerTest(BaseTestCase):
         self.assertAlmostEqual(stopped_state.get("timerRemainingSec"), 40.0, delta=0.1)
 
 
+class VersioningTest(BaseTestCase):
+    def setUp(self):
+        state_map.clear()
+        state_locks.clear()
+
+    def test_timer_sync_does_not_bump_box_version(self):
+        async def scenario():
+            # Enable validation so boxVersion stale checks are active, but patch persistence to avoid FS writes.
+            live_module.VALIDATION_ENABLED = True
+            try:
+                with patch.object(live_module, "save_box_state", return_value=None):
+                    with patch.object(live_module, "append_audit_event", return_value=None):
+                        await cmd(
+                            Cmd(
+                                boxId=1,
+                                type="INIT_ROUTE",
+                                routeIndex=1,
+                                holdsCount=10,
+                                competitors=[{"nume": "Alex"}],
+                            ),
+                            claims={"role": "admin", "sub": "test"},
+                        )
+                        sid = state_map[1]["sessionId"]
+                        v1 = state_map[1]["boxVersion"]
+
+                        await cmd(
+                            Cmd(boxId=1, type="START_TIMER", sessionId=sid, boxVersion=v1),
+                            claims={"role": "admin", "sub": "test"},
+                        )
+                        v_after_start = state_map[1]["boxVersion"]
+
+                        # Client TIMER_SYNC often omits boxVersion. This must not advance boxVersion.
+                        await cmd(
+                            Cmd(boxId=1, type="TIMER_SYNC", sessionId=sid, remaining=55.0),
+                            claims={"role": "admin", "sub": "test"},
+                        )
+                        v_after_sync = state_map[1]["boxVersion"]
+
+                        submit_res = await cmd(
+                            Cmd(
+                                boxId=1,
+                                type="SUBMIT_SCORE",
+                                sessionId=sid,
+                                boxVersion=v_after_start,
+                                score=10.0,
+                                competitor="Alex",
+                            ),
+                            claims={"role": "admin", "sub": "test"},
+                        )
+                        return v_after_start, v_after_sync, submit_res
+            finally:
+                live_module.VALIDATION_ENABLED = False
+
+        v_after_start, v_after_sync, submit_res = asyncio.run(scenario())
+        self.assertEqual(v_after_sync, v_after_start)
+        self.assertEqual(submit_res.get("status"), "ok")
+
+
 # ==================== PROGRESS UPDATE TESTS ====================
 class ProgressUpdateTest(BaseTestCase):
     def setUp(self):

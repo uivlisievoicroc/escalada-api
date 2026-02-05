@@ -41,6 +41,12 @@ class PublicBoxesResponse(BaseModel):
     boxes: List[PublicBoxInfo]
 
 
+class PublicCompetitionOfficialsResponse(BaseModel):
+    judgeChief: str = ""
+    competitionDirector: str = ""
+    chiefRoutesetter: str = ""
+
+
 def _decode_spectator_token(token: str) -> Dict[str, Any]:
     """Decode and validate spectator token."""
     try:
@@ -114,6 +120,25 @@ async def get_public_boxes(token: str | None = None) -> PublicBoxesResponse:
     # Sort by boxId for consistent ordering
     boxes.sort(key=lambda b: b.boxId)
     return PublicBoxesResponse(boxes=boxes)
+
+
+@router.get("/officials", response_model=PublicCompetitionOfficialsResponse)
+async def get_public_officials(token: str | None = None) -> PublicCompetitionOfficialsResponse:
+    """Get global competition officials (spectator token required)."""
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="token_required",
+        )
+    _decode_spectator_token(token)
+    from escalada.api import live as live_module
+
+    data = live_module.get_competition_officials()
+    return PublicCompetitionOfficialsResponse(
+        judgeChief=data.get("judgeChief") or "",
+        competitionDirector=data.get("competitionDirector") or "",
+        chiefRoutesetter=data.get("chiefRoutesetter") or "",
+    )
 
 
 # Channel registry for authenticated public WS connections per box

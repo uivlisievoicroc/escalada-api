@@ -21,6 +21,7 @@ from escalada.api.ops import router as ops_router
 from escalada.api.podium import router as podium_router
 from escalada.api.save_ranking import router as save_ranking_router
 from escalada.routers.upload import router as upload_router
+from escalada.rate_limit import cleanup_rate_limit_data
 
 # Configure logging
 logging.basicConfig(
@@ -43,7 +44,9 @@ if not _jwt_secret or _jwt_secret == "dev-secret-change-me":
 BACKUP_INTERVAL_MIN = int(os.getenv("BACKUP_INTERVAL_MIN", "10"))
 BACKUP_RETENTION_FILES = int(os.getenv("BACKUP_RETENTION_FILES", "20"))
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")
+RATE_LIMIT_CLEANUP_INTERVAL_MIN = int(os.getenv("RATE_LIMIT_CLEANUP_INTERVAL_MIN", "5"))
 backup_task: asyncio.Task | None = None
+rate_limit_cleanup_task: asyncio.Task | None = None
 
 
 async def run_migrations() -> None:
@@ -65,8 +68,8 @@ async def lifespan(app: FastAPI):
     async def _backup_loop():
         output_dir = Path(BACKUP_DIR)
         while True:
-            await asyncio.sleep(max(BACKUP_INTERVAL_MIN, 1) * 60)
             try:
+                await asyncio.sleep(max(BACKUP_INTERVAL_MIN, 1) * 60)
                 snaps = await collect_snapshots()
                 path = await write_backup_file(output_dir, snaps)
                 logger.info("Periodic backup saved to %s", path)
@@ -77,14 +80,33 @@ async def lifespan(app: FastAPI):
                         old.unlink()
                     except Exception:
                         pass
+            except asyncio.CancelledError:
+                break
             except Exception as exc:
                 logger.error("Periodic backup failed: %s", exc, exc_info=True)
 
-    global backup_task
+    async def _rate_limit_cleanup_loop():
+        """Periodic cleanup of old rate limiting data to prevent memory leak."""
+        while True:
+            try:
+                await asyncio.sleep(max(RATE_LIMIT_CLEANUP_INTERVAL_MIN, 1) * 60)
+                cleanup_rate_limit_data()
+                logger.debug("Rate limit data cleanup completed")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("Rate limit cleanup failed: %s", exc)
+
+    global backup_task, rate_limit_cleanup_task
     if BACKUP_INTERVAL_MIN > 0:
         backup_task = asyncio.create_task(_backup_loop())
     else:
         backup_task = None
+
+    if RATE_LIMIT_CLEANUP_INTERVAL_MIN > 0:
+        rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
+    else:
+        rate_limit_cleanup_task = None
 
     yield
 
@@ -93,6 +115,13 @@ async def lifespan(app: FastAPI):
         backup_task.cancel()
         try:
             await backup_task
+        except asyncio.CancelledError:
+            pass
+
+    if rate_limit_cleanup_task:
+        rate_limit_cleanup_task.cancel()
+        try:
+            await rate_limit_cleanup_task
         except asyncio.CancelledError:
             pass
 

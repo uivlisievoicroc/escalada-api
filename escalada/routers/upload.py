@@ -3,9 +3,11 @@ from zipfile import BadZipFile
 
 import openpyxl
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 router = APIRouter(tags=["upload"], prefix="/admin")
 from escalada.auth.deps import require_role
+from escalada.api import live as live_module
 
 
 @router.post("/upload")
@@ -74,3 +76,26 @@ async def upload_listbox(
         "message": "Listbox uploaded successfully",
         "listbox": new_listbox,
     }
+
+
+class CompetitionOfficialsPayload(BaseModel):
+    judgeChief: str = ""
+    competitionDirector: str = ""
+    chiefRoutesetter: str = ""
+
+
+@router.get("/competition_officials")
+async def get_competition_officials(claims=Depends(require_role(["admin"]))):
+    return {"status": "ok", **live_module.get_competition_officials()}
+
+
+@router.post("/competition_officials")
+async def set_competition_officials(
+    payload: CompetitionOfficialsPayload, claims=Depends(require_role(["admin"]))
+):
+    officials = live_module.set_competition_officials(
+        judge_chief=payload.judgeChief,
+        competition_director=payload.competitionDirector,
+        chief_routesetter=payload.chiefRoutesetter,
+    )
+    return {"status": "ok", **officials}

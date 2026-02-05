@@ -50,6 +50,9 @@ def _events_path() -> Path:
 def _users_path() -> Path:
     return _storage_dir() / "users.json"
 
+def _competition_officials_path() -> Path:
+    return _storage_dir() / "competition_officials.json"
+
 
 def ensure_storage_dirs() -> None:
     base = _storage_dir()
@@ -83,19 +86,41 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
 
 
 def load_box_states() -> Dict[int, dict]:
+    """Load box states from JSON files with validation.
+    Skips invalid/corrupt files to prevent startup crashes.
+    """
     ensure_storage_dirs()
     states: Dict[int, dict] = {}
     for path in _boxes_dir().glob("*.json"):
         try:
             box_id = int(path.stem)
         except ValueError:
+            logger.warning(f"Skipping invalid box state filename: {path.name}")
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except json.JSONDecodeError as exc:
+            logger.error(f"Corrupt JSON in box state file {path.name}: {exc}")
             continue
+        except Exception as exc:
+            logger.error(f"Failed to read box state file {path.name}: {exc}")
+            continue
+        
+        # Validate basic structure
         if not isinstance(data, dict):
+            logger.warning(f"Invalid box state format in {path.name} (not a dict), skipping")
             continue
+        
+        # Validate critical fields exist and have correct types
+        if "initiated" in data and not isinstance(data["initiated"], bool):
+            logger.warning(f"Invalid 'initiated' field in {path.name}, skipping")
+            continue
+        
+        if "competitors" in data and not isinstance(data["competitors"], list):
+            logger.warning(f"Invalid 'competitors' field in {path.name}, skipping")
+            continue
+        
+        # Apply defaults for missing fields
         if "boxVersion" not in data:
             data["boxVersion"] = 0
         if "sessionId" not in data:
@@ -104,8 +129,47 @@ def load_box_states() -> Dict[int, dict]:
             data["routesCount"] = data.get("routeIndex") or 1
         if "holdsCounts" not in data:
             data["holdsCounts"] = []
+        
         states[box_id] = data
+        logger.debug(f"Loaded box state: {box_id} (version={data.get('boxVersion')})")
+    
+    if states:
+        logger.info(f"Successfully loaded {len(states)} valid box states")
     return states
+
+
+def load_competition_officials() -> dict[str, str]:
+    """Load global competition officials (judge chief + competition director + chief routesetter)."""
+    ensure_storage_dirs()
+    path = _competition_officials_path()
+    if not path.exists():
+        return {"judgeChief": "", "competitionDirector": "", "chiefRoutesetter": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.error("Failed to load competition officials: %s", exc)
+        return {"judgeChief": "", "competitionDirector": "", "chiefRoutesetter": ""}
+    if not isinstance(data, dict):
+        return {"judgeChief": "", "competitionDirector": "", "chiefRoutesetter": ""}
+    judge = data.get("judgeChief")
+    director = data.get("competitionDirector")
+    chief_routesetter = data.get("chiefRoutesetter")
+    return {
+        "judgeChief": judge.strip() if isinstance(judge, str) else "",
+        "competitionDirector": director.strip() if isinstance(director, str) else "",
+        "chiefRoutesetter": chief_routesetter.strip() if isinstance(chief_routesetter, str) else "",
+    }
+
+
+def save_competition_officials(judge_chief: str, competition_director: str, chief_routesetter: str) -> None:
+    """Persist global competition officials (JSON-only)."""
+    ensure_storage_dirs()
+    payload = {
+        "judgeChief": (judge_chief or "").strip(),
+        "competitionDirector": (competition_director or "").strip(),
+        "chiefRoutesetter": (chief_routesetter or "").strip(),
+    }
+    _atomic_write_json(_competition_officials_path(), payload)
 
 
 async def save_box_state(box_id: int, state: dict) -> None:

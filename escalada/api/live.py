@@ -36,6 +36,8 @@ from escalada.storage.json_store import (
     clear_box_state_files,
     ensure_storage_dirs,
     load_box_states,
+    load_competition_officials,
+    save_competition_officials,
     save_box_state,
 )
 
@@ -54,6 +56,31 @@ public_channels_lock = asyncio.Lock()
 
 # Test mode - disable validation for backward compatibility
 VALIDATION_ENABLED = True
+competition_officials: dict[str, str] = {"judgeChief": "", "competitionDirector": "", "chiefRoutesetter": ""}
+
+
+def get_competition_officials() -> dict[str, str]:
+    return dict(competition_officials)
+
+
+def set_competition_officials(
+    *, judge_chief: str, competition_director: str, chief_routesetter: str
+) -> dict[str, str]:
+    global competition_officials
+    competition_officials = {
+        "judgeChief": (judge_chief or "").strip(),
+        "competitionDirector": (competition_director or "").strip(),
+        "chiefRoutesetter": (chief_routesetter or "").strip(),
+    }
+    try:
+        save_competition_officials(
+            competition_officials["judgeChief"],
+            competition_officials["competitionDirector"],
+            competition_officials["chiefRoutesetter"],
+        )
+    except Exception as exc:
+        logger.error("Failed to persist competition officials: %s", exc, exc_info=True)
+    return dict(competition_officials)
 
 
 def _server_side_timer_enabled() -> bool:
@@ -164,6 +191,11 @@ async def preload_states_from_json() -> int:
             removed,
         )
     states = load_box_states()
+    try:
+        global competition_officials
+        competition_officials = load_competition_officials()
+    except Exception as exc:
+        logger.warning("Failed to preload competition officials: %s", exc)
     loaded = 0
     async with init_lock:
         for box_id, state in states.items():
@@ -406,15 +438,25 @@ async def _heartbeat(ws: WebSocket, box_id: int, last_pong: dict[str, float]) ->
 async def _broadcast_to_box(box_id: int, payload: dict) -> None:
     """Safely broadcast JSON payload to all subscribers on a box.
     Removes dead connections automatically.
+    Disconnects slow clients (timeout 5s) to prevent blocking.
     """
     # Get snapshot of current subscribers
     async with channels_lock:
         sockets = list(channels.get(box_id) or set())
 
     dead = []
+    message = json.dumps(payload, ensure_ascii=False)
     for ws in sockets:
         try:
-            await ws.send_text(json.dumps(payload, ensure_ascii=False))
+            # Add timeout to prevent slow clients from blocking broadcast
+            await asyncio.wait_for(ws.send_text(message), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"WebSocket send timeout for box {box_id}, disconnecting slow client")
+            dead.append(ws)
+            try:
+                await ws.close(code=1008, reason="Send timeout")
+            except Exception:
+                pass
         except Exception as e:
             logger.debug(f"Broadcast error to box {box_id}: {e}")
             dead.append(ws)
@@ -771,6 +813,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
     remaining = state.get("remaining")
     if _server_side_timer_enabled():
         remaining = _compute_remaining(state, _now_ms())
+    officials = get_competition_officials()
     return {
         "type": "STATE_SNAPSHOT",
         "boxId": box_id,
@@ -791,6 +834,9 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
         "timerPreset": state.get("timerPreset"),
         "timerPresetSec": state.get("timerPresetSec"),
+        "judgeChief": officials.get("judgeChief", ""),
+        "competitionDirector": officials.get("competitionDirector", ""),
+        "chiefRoutesetter": officials.get("chiefRoutesetter", ""),
         "sessionId": state.get("sessionId"),  # Include session ID for client validation
         "boxVersion": state.get("boxVersion", 0),
     }
@@ -827,7 +873,11 @@ async def _ensure_state(box_id: int) -> dict:
 
 async def _persist_state(box_id: int, state: dict, action: str, payload: dict) -> str:
     """Persist snapshot + audit event (JSON-only)."""
-    if action != "INIT_ROUTE":
+    # Box version is used to prevent stale UI actions. Do not bump for TIMER_SYNC:
+    # - TIMER_SYNC can be high-frequency
+    # - clients may omit boxVersion for TIMER_SYNC
+    # - bumping here causes unrelated commands (e.g. SUBMIT_SCORE) to be rejected as stale
+    if action not in {"INIT_ROUTE", "TIMER_SYNC"}:
         state["boxVersion"] = int(state.get("boxVersion", 0) or 0) + 1
     await save_box_state(box_id, state)
     event = build_audit_event(
