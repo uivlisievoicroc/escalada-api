@@ -21,25 +21,25 @@
   },
   "Box 0": {
     "username": "Box 0",
-    "password_hash": "$pbkdf2-sha256$29000$SokxRkgpBaB07h2jlLKW0g$0.5X2lUv83jZzGuD3VrTmjW95gDJn0P.dNbnjXaPuLA",
+    "password_hash": "$pbkdf2-sha256$29000$B4DwvjdmrNX6H6N0LuX8Pw$3mk4boF44hZE6YxE5uzZ9umYZ7oqP9c1yW25fhVgst0",
     "role": "judge",
     "assigned_boxes": [
       0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-02-08T10:56:35.329785+00:00"
+    "updated_at": "2026-02-08T13:24:21.863210+00:00"
   },
   "0": {
     "username": "0",
-    "password_hash": "$pbkdf2-sha256$29000$SokxRkgpBaB07h2jlLKW0g$0.5X2lUv83jZzGuD3VrTmjW95gDJn0P.dNbnjXaPuLA",
+    "password_hash": "$pbkdf2-sha256$29000$B4DwvjdmrNX6H6N0LuX8Pw$3mk4boF44hZE6YxE5uzZ9umYZ7oqP9c1yW25fhVgst0",
     "role": "judge",
     "assigned_boxes": [
       0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-02-08T10:56:35.329785+00:00"
+    "updated_at": "2026-02-08T13:24:21.863210+00:00"
   },
   "12": {
     "username": "12",
@@ -54,14 +54,14 @@
   },
   "qwerty": {
     "username": "qwerty",
-    "password_hash": "$pbkdf2-sha256$29000$AGAs5VzrXUvJuXfO.d9bKw$ovJDVWrIOecY/tNgqIRSOa8wWipH2haOu0PJoRt4uP4",
+    "password_hash": "$pbkdf2-sha256$29000$B4DwvjdmrNX6H6N0LuX8Pw$3mk4boF44hZE6YxE5uzZ9umYZ7oqP9c1yW25fhVgst0",
     "role": "judge",
     "assigned_boxes": [
-      1
+      0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-01-11T13:15:45.236431+00:00"
+    "updated_at": "2026-02-08T13:24:21.863210+00:00"
   },
   "Box 1": {
     "username": "Box 1",
@@ -194,5 +194,27 @@
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
     "updated_at": "2026-02-03T09:31:27.693834+00:00"
+  },
+  "under 13 baieti": {
+    "username": "under 13 baieti",
+    "password_hash": "$pbkdf2-sha256$29000$hhDCWCslBACgdG4tZaw1xg$nYKSOlSvd98Lk.O90kiIRtJkwG6Ox8eehQNCuidBXvU",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-02-08T12:07:37.492002+00:00"
+  },
+  "under19baieti": {
+    "username": "under19baieti",
+    "password_hash": "$pbkdf2-sha256$29000$oXTOuVeqtTYGAAAgJGQsRQ$8n3yQ6Ya1jnrodA.hj5zu5o5xhBBEBrLyWOP9nmrAZQ",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-02-08T13:00:11.983337+00:00"
   }
 }

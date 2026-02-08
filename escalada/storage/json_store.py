@@ -1,3 +1,18 @@
+"""
+JSON storage backend (file-based persistence).
+
+This module provides:
+- Per-box state persistence under `STORAGE_DIR/boxes/{boxId}.json` (atomic writes)
+- Append-only audit log in NDJSON format (`STORAGE_DIR/events.ndjson`) with size-based rotation
+- User database stored in `STORAGE_DIR/users.json` (includes default admin bootstrap + reset escape hatch)
+- Global competition officials stored in `STORAGE_DIR/competition_officials.json`
+
+Concurrency model:
+- A per-box asyncio.Lock prevents overlapping writes for the same box id
+- A global audit lock serializes appends/rotations of the NDJSON audit log
+"""
+
+# -------------------- Standard library imports --------------------
 import asyncio
 import json
 import logging
@@ -8,21 +23,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
-# JSON-only build: Postgres/Alembic removed
+# -------------------- Storage configuration --------------------
+# JSON-only build: Postgres/Alembic removed (all persistence is file-based).
 STORAGE_MODE = "json"
 STORAGE_DIR = os.getenv("STORAGE_DIR", "data")
 
+# -------------------- Concurrency primitives --------------------
+# Per-box locks are created lazily and guarded by `_box_locks_lock` to avoid races.
 _box_locks: Dict[int, asyncio.Lock] = {}
 _box_locks_lock = asyncio.Lock()
+# Single lock for audit writes/rotation (NDJSON is append-only but rotation/rename must be serialized).
 _audit_lock = asyncio.Lock()
 
-# Audit file rotation settings
+# -------------------- Audit file rotation settings --------------------
 MAX_AUDIT_FILE_SIZE_MB = int(os.getenv("MAX_AUDIT_FILE_SIZE_MB", "50"))
 
 logger = logging.getLogger(__name__)
 
 
 async def _get_box_lock(box_id: int) -> asyncio.Lock:
+    # Lazily create the lock for this box id (safe under `_box_locks_lock`).
     async with _box_locks_lock:
         lock = _box_locks.get(box_id)
         if lock is None:
@@ -36,25 +56,32 @@ def is_json_mode() -> bool:
 
 
 def _storage_dir() -> Path:
+    # Root storage directory (defaults to `./data`).
     return Path(STORAGE_DIR)
 
 
 def _boxes_dir() -> Path:
+    # Per-box state files live under `data/boxes/{boxId}.json`.
     return _storage_dir() / "boxes"
 
 
 def _events_path() -> Path:
+    # Append-only audit log (NDJSON: 1 JSON object per line).
     return _storage_dir() / "events.ndjson"
 
 
 def _users_path() -> Path:
+    # User database (JSON dict keyed by username).
     return _storage_dir() / "users.json"
 
+
 def _competition_officials_path() -> Path:
+    # Global competition officials persisted as a single JSON object.
     return _storage_dir() / "competition_officials.json"
 
 
 def ensure_storage_dirs() -> None:
+    # Create the root + `boxes/` folder if missing (idempotent).
     base = _storage_dir()
     base.mkdir(parents=True, exist_ok=True)
     _boxes_dir().mkdir(parents=True, exist_ok=True)
@@ -77,6 +104,10 @@ def clear_box_state_files() -> int:
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
+    # Atomic write pattern:
+    # 1) write to `*.tmp`
+    # 2) replace the target file in one filesystem operation
+    # This prevents partial/corrupt JSON files on power loss or concurrent restarts.
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -92,11 +123,14 @@ def load_box_states() -> Dict[int, dict]:
     ensure_storage_dirs()
     states: Dict[int, dict] = {}
     for path in _boxes_dir().glob("*.json"):
+        # Box id is derived from the filename (e.g. `0.json` -> box_id=0).
         try:
             box_id = int(path.stem)
         except ValueError:
             logger.warning(f"Skipping invalid box state filename: {path.name}")
             continue
+
+        # Parse JSON (corrupt files are skipped instead of crashing the process).
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -106,12 +140,12 @@ def load_box_states() -> Dict[int, dict]:
             logger.error(f"Failed to read box state file {path.name}: {exc}")
             continue
         
-        # Validate basic structure
+        # Validate basic structure (must be a dict-like state object).
         if not isinstance(data, dict):
             logger.warning(f"Invalid box state format in {path.name} (not a dict), skipping")
             continue
         
-        # Validate critical fields exist and have correct types
+        # Validate critical fields if present (defensive against manual edits / older versions).
         if "initiated" in data and not isinstance(data["initiated"], bool):
             logger.warning(f"Invalid 'initiated' field in {path.name}, skipping")
             continue
@@ -120,7 +154,7 @@ def load_box_states() -> Dict[int, dict]:
             logger.warning(f"Invalid 'competitors' field in {path.name}, skipping")
             continue
         
-        # Apply defaults for missing fields
+        # Apply defaults for missing fields (backward compatibility).
         if "boxVersion" not in data:
             data["boxVersion"] = 0
         if "sessionId" not in data:
@@ -173,6 +207,7 @@ def save_competition_officials(judge_chief: str, competition_director: str, chie
 
 
 async def save_box_state(box_id: int, state: dict) -> None:
+    # Persist a single box state file (serialized under the per-box lock).
     ensure_storage_dirs()
     payload = dict(state)
     path = _boxes_dir() / f"{box_id}.json"
@@ -199,6 +234,8 @@ def _rotate_audit_file_if_needed() -> None:
 
 
 async def append_audit_event(event: dict) -> None:
+    # Append a single event as NDJSON.
+    # Rotation happens under the same lock so rename + append cannot interleave.
     ensure_storage_dirs()
     line = json.dumps(event, ensure_ascii=False)
     async with _audit_lock:
@@ -217,6 +254,7 @@ def read_latest_events(
     include_payload: bool = False,
     box_id: int | None = None,
 ) -> list[dict]:
+    # Tail the NDJSON audit log in a memory-bounded way using a deque.
     path = _events_path()
     if not path.exists():
         return []
@@ -233,6 +271,7 @@ def read_latest_events(
             if box_id is not None and event.get("boxId") != box_id:
                 continue
             if not include_payload:
+                # Strip payload for lighter UI responses unless explicitly requested.
                 event = dict(event)
                 event["payload"] = None
             tail.append(event)
@@ -240,6 +279,7 @@ def read_latest_events(
 
 
 def load_users() -> Dict[str, dict]:
+    # Supports both dict and legacy list formats.
     ensure_storage_dirs()
     path = _users_path()
     if not path.exists():
@@ -265,6 +305,8 @@ def save_users(users: Dict[str, dict]) -> None:
 
 
 def get_users_with_default_admin() -> Dict[str, dict]:
+    # Ensure there is always an "admin" user present.
+    # This is intentionally file-based and local-only (JSON mode).
     users = load_users()
 
     if "admin" in users:
@@ -304,6 +346,8 @@ def build_audit_event(
     state: dict | None,
     actor: dict | None,
 ) -> dict:
+    # Normalized event envelope written to NDJSON.
+    # Includes useful metadata for later debugging/auditing (actor, session/version, timestamps).
     now = datetime.now(timezone.utc).isoformat()
     return {
         "id": str(uuid.uuid4()),

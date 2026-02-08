@@ -1,3 +1,23 @@
+"""
+Official export helpers (Excel/PDF + ZIP bundle).
+
+This module generates a self-contained "official results" archive for a single box/category
+based on a state snapshot (as produced by the live runtime). The output is intended for:
+- jury/officials export at the end of a category
+- offline sharing (ZIP containing XLSX/PDF + metadata JSON)
+
+The export format:
+- `overall.xlsx` + `overall.pdf`: overall ranking across routes
+- `route_{n}.xlsx` + `route_{n}.pdf`: per-route ranking sheets
+- `metadata.json`: source fields (boxId/category/routesCount/export timestamp + clubs)
+
+Notes:
+- Times are normalized via `_to_seconds` and formatted with `_format_time` for display only.
+- The route-level ranking uses "dense" ranks for equal scores, and derives a points value
+  as the average of the tied positions (used by the overall sheet builder).
+"""
+
+# -------------------- Standard library imports --------------------
 import io
 import json
 import re
@@ -7,8 +27,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+# -------------------- Third-party imports --------------------
 import pandas as pd
 
+# -------------------- Local application imports --------------------
 from escalada.api.save_ranking import (
     RankingIn,
     _build_overall_df,
@@ -19,12 +41,21 @@ from escalada.api.save_ranking import (
 
 
 def safe_zip_component(val: str) -> str:
+    """Sanitize an arbitrary string so it is safe to use as a ZIP path component."""
     cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", (val or "").strip())
     cleaned = cleaned.strip("._-")
     return cleaned or "export"
 
 
 def _route_count_from_snapshot(snapshot: dict[str, Any]) -> int:
+    """
+    Best-effort route count resolution from a snapshot.
+
+    Priority:
+    - explicit `routesCount` (preferred, newer)
+    - legacy alias `routes_count`
+    - infer from the length of the per-athlete `scores` arrays
+    """
     explicit = snapshot.get("routesCount") or snapshot.get("routes_count")
     if isinstance(explicit, int) and explicit > 0:
         return explicit
@@ -36,6 +67,12 @@ def _route_count_from_snapshot(snapshot: dict[str, Any]) -> int:
 
 
 def _normalize_times(raw_times: dict[str, list[Any]] | None) -> dict[str, list[int | None]]:
+    """
+    Convert the raw `times` payload (seconds/ms/strings) into seconds (ints) or None.
+
+    The downstream ranking builders operate on numeric seconds; formatting happens later
+    when we render to PDF/Excel.
+    """
     times = raw_times or {}
     normalized: dict[str, list[int | None]] = {}
     for name, arr in times.items():
@@ -44,6 +81,7 @@ def _normalize_times(raw_times: dict[str, list[Any]] | None) -> dict[str, list[i
 
 
 def _normalize_clubs(raw_clubs: dict[str, Any] | None) -> dict[str, str]:
+    """Normalize club mapping: drop empty keys/values and coerce non-strings to strings."""
     clubs = raw_clubs or {}
     normalized: dict[str, str] = {}
     for name, club in clubs.items():
@@ -68,6 +106,14 @@ def _build_route_df(
     route_index: int,
     use_time_tiebreak: bool,
 ) -> pd.DataFrame:
+    """
+    Build a per-route ranking DataFrame.
+
+    Ranking is score-descending, then name ascending for stable output. We compute:
+    - `Rank`: 1..N with ties (same score => same rank number)
+    - `Points`: average of the tied positions (e.g., tie for 2nd/3rd => (2+3)/2 = 2.5)
+    - `Time`: formatted time column (optional; currently display-only)
+    """
     route_entries: list[tuple[str, float | None, int | None]] = []
     for name, arr in (scores or {}).items():
         score = arr[route_index] if route_index < len(arr or []) else None
@@ -83,6 +129,8 @@ def _build_route_df(
         ),
     )
 
+    # Build a rank column with ties. Example:
+    # scores: [10, 9, 9, 8] => ranks: [1, 2, 2, 4]
     ranks: list[int] = []
     prev_score: float | None = None
     prev_rank = 0
@@ -95,6 +143,8 @@ def _build_route_df(
         prev_score = score
         prev_rank = rank
 
+    # Points are used by the overall builder. We assign the "average placing" for tied scores
+    # so the overall sheet can aggregate fairly across routes.
     points: dict[str, float] = {}
     pos = 1
     i = 0
@@ -118,6 +168,7 @@ def _build_route_df(
 
     rows = []
     for idx, (name, score, tm) in enumerate(route_entries_sorted):
+        # Include clubs when available; keep schema stable even when clubs are unknown.
         row: dict[str, Any] = {
             "Rank": ranks[idx],
             "Name": name,
@@ -126,6 +177,7 @@ def _build_route_df(
             "Points": points.get(name),
         }
         if use_time_tiebreak:
+            # Legacy flag: currently display-only (no time-based tie-breaking here).
             row["Time"] = _format_time(tm)
         rows.append(row)
     return pd.DataFrame(rows)
@@ -138,17 +190,21 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
       - route_{n}.xlsx / route_{n}.pdf
       - metadata.json
     """
+    # Use category name for folder naming; fall back to box id for robustness.
     categorie = snapshot.get("categorie") or f"box_{snapshot.get('boxId')}"
     folder = safe_zip_component(str(categorie))
     exported_at = datetime.now(timezone.utc).isoformat()
 
+    # We expect a `scores` mapping: {athleteName: [route1Score, route2Score, ...]}.
     scores = snapshot.get("scores") or {}
     if not isinstance(scores, dict) or not scores:
         raise ValueError("missing_scores")
 
+    # Times are optional; normalize to seconds so renderers can format them consistently.
     raw_times = snapshot.get("times") or {}
     times = _normalize_times(raw_times if isinstance(raw_times, dict) else {})
 
+    # Clubs are optional; prefer explicit snapshot field but also support the competitors list.
     clubs = _normalize_clubs(snapshot.get("clubs") if isinstance(snapshot.get("clubs"), dict) else {})
     if not clubs:
         competitors = snapshot.get("competitors") or []
@@ -173,6 +229,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
     # Legacy flag: controls time column display only (no tie-breaking).
     use_time = bool(snapshot.get("timeCriterionEnabled"))
 
+    # `RankingIn` is shared with other exports; we reuse the same overall builder for consistency.
     payload = RankingIn(
         categorie=str(categorie),
         route_count=int(route_count),
@@ -186,6 +243,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
     with TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
 
+        # Overall files (XLSX + PDF)
         overall_df = _build_overall_df(payload, times)
         overall_xlsx = tmp_dir / "overall.xlsx"
         overall_pdf = tmp_dir / "overall.pdf"
@@ -194,6 +252,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
 
         file_paths: list[Path] = [overall_xlsx, overall_pdf]
 
+        # Per-route files (XLSX + PDF)
         for r in range(route_count):
             df_route = _build_route_df(
                 scores=scores,
@@ -208,6 +267,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
             _df_to_pdf(df_route, pdf_route, title=f"{categorie} – Route {r+1}")
             file_paths.extend([xlsx_route, pdf_route])
 
+        # Include metadata for traceability/debugging (no personal data beyond names/clubs).
         metadata = {
             "boxId": snapshot.get("boxId"),
             "competitionId": snapshot.get("competitionId"),
@@ -223,6 +283,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
         )
         file_paths.append(metadata_path)
 
+        # Package everything into a ZIP buffer for streaming as a single response.
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for p in file_paths:

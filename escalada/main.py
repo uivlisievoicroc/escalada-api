@@ -1,3 +1,13 @@
+"""
+Escalada API entrypoint (FastAPI).
+
+This module wires together:
+- App startup/shutdown (lifespan): preload JSON state + start background maintenance tasks
+- Global middleware: request logging + CORS
+- Router registration: public endpoints + admin/ops endpoints
+"""
+
+# -------------------- Standard library imports --------------------
 import asyncio
 import logging
 import os
@@ -6,10 +16,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from time import time
 
+# -------------------- Third-party imports --------------------
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# -------------------- Local application imports --------------------
 from escalada.api import live as live_module
 from escalada.api.audit import router as audit_router
 from escalada.api.auth import router as auth_router
@@ -23,7 +35,8 @@ from escalada.api.save_ranking import router as save_ranking_router
 from escalada.routers.upload import router as upload_router
 from escalada.rate_limit import cleanup_rate_limit_data
 
-# Configure logging
+# -------------------- Logging --------------------
+# Log to stdout (for containers/terminal) and also to a local file (useful on event day).
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -32,19 +45,24 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Load .env early for CORS settings
+# -------------------- Environment configuration --------------------
+# Load `.env` early because we use env vars for CORS, auth, and background task tuning.
 load_dotenv()
 
+# JWT secret is required for production deployments (dev default is intentionally flagged).
 _jwt_secret = os.getenv("JWT_SECRET")
 if not _jwt_secret or _jwt_secret == "dev-secret-change-me":
     logger.warning(
         "JWT_SECRET is missing or uses the default value; set a strong JWT_SECRET in the environment for production."
     )
 
+# Background task tuning (minutes) + backup storage location.
 BACKUP_INTERVAL_MIN = int(os.getenv("BACKUP_INTERVAL_MIN", "10"))
 BACKUP_RETENTION_FILES = int(os.getenv("BACKUP_RETENTION_FILES", "20"))
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")
 RATE_LIMIT_CLEANUP_INTERVAL_MIN = int(os.getenv("RATE_LIMIT_CLEANUP_INTERVAL_MIN", "5"))
+
+# References to asyncio Tasks so we can cancel them cleanly on shutdown.
 backup_task: asyncio.Task | None = None
 rate_limit_cleanup_task: asyncio.Task | None = None
 
@@ -58,14 +76,17 @@ async def run_migrations() -> None:
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events for the FastAPI application."""
 
+    # -------------------- Startup --------------------
     logger.info("🚀 Escalada API starting up (JSON-only)...")
 
+    # Best-effort state preload (allows restarts to pick up where the event left off).
     try:
         await live_module.preload_states()
     except Exception as exc:
         logger.warning("State preload skipped: %s", exc)
 
     async def _backup_loop():
+        # Periodically snapshot all box states to JSON files for disaster recovery.
         output_dir = Path(BACKUP_DIR)
         while True:
             try:
@@ -97,6 +118,7 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.warning("Rate limit cleanup failed: %s", exc)
 
+    # Start background tasks if enabled (interval > 0).
     global backup_task, rate_limit_cleanup_task
     if BACKUP_INTERVAL_MIN > 0:
         backup_task = asyncio.create_task(_backup_loop())
@@ -110,6 +132,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # -------------------- Shutdown --------------------
+    # Cancel background tasks to ensure a graceful shutdown (no dangling loops).
     logger.info("🛑 Escalada API shutting down...")
     if backup_task:
         backup_task.cancel()
@@ -126,15 +150,18 @@ async def lifespan(app: FastAPI):
             pass
 
 
+# -------------------- FastAPI app --------------------
 app = FastAPI(
     title="Escalada Control Panel API",
     lifespan=lifespan,
 )
 
-# Secure CORS configuration
+# -------------------- CORS --------------------
+# Default origins cover local dev + typical LAN deployments; can be overridden via env vars.
 DEFAULT_ORIGINS = "http://localhost:5173,http://localhost:3000,http://192.168.100.205:5173"
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", DEFAULT_ORIGINS).split(",")
 
+# Regex allows *.local and common private LAN IP ranges (useful for phones/tablets/TV browsers).
 DEFAULT_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|[a-zA-Z0-9-]+\.local|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$"
 ALLOWED_ORIGIN_REGEX = os.getenv("ALLOWED_ORIGIN_REGEX", DEFAULT_ORIGIN_REGEX)
 
@@ -150,6 +177,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request, call_next):
+    # Lightweight access log with timing; errors include stack traces for debugging.
     start_time = time()
 
     logger.info(
@@ -185,11 +213,13 @@ async def log_requests(request, call_next):
 
 @app.get("/health")
 async def health():
+    # Minimal liveness probe used by local tooling / reverse proxies.
     return {"status": "ok", "storage": "json"}
 
 
 @app.get("/status/summary")
 async def status_summary():
+    # Human-friendly status endpoint (useful during events for quick sanity checks).
     return {
         "competitions": 0,
         "boxes": len(live_module.state_map),
@@ -199,6 +229,8 @@ async def status_summary():
     }
 
 
+# -------------------- Router registration --------------------
+# Public/API routers
 app.include_router(upload_router, prefix="/api")
 app.include_router(save_ranking_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
@@ -206,6 +238,8 @@ app.include_router(live_router, prefix="/api")
 app.include_router(public_router, prefix="/api")
 app.include_router(podium_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
+
+# Admin routers (restricted endpoints)
 app.include_router(backup_router, prefix="/api/admin")
 app.include_router(audit_router, prefix="/api/admin")
 app.include_router(ops_router, prefix="/api/admin")

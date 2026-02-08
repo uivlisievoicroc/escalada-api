@@ -1,8 +1,25 @@
 # escalada/api/save_ranking.py
+"""
+Admin-only "save rankings" endpoint and shared export helpers.
+
+This module renders a category's results to disk under `escalada/clasamente/<categorie>/`:
+- `overall.xlsx` / `overall.pdf`
+- `route_{n}.xlsx` / `route_{n}.pdf` (one per route)
+
+It also exposes helper functions (`_build_overall_df`, `_df_to_pdf`, `_to_seconds`, etc.) that
+are reused by other export features (e.g. official ZIP exports).
+
+Important:
+- The `use_time_tiebreak` flag is currently **display-only** (adds a Time column). Ranking is
+  based on score; ties are handled by assigning the average of the tied positions.
+"""
+
+# -------------------- Standard library imports --------------------
 import math
 import os
 from pathlib import Path
 
+# -------------------- Third-party imports --------------------
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -15,8 +32,9 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
                                 TableStyle)
 
-# Register Unicode-capable font for diacritics
-# Try DejaVuSans first, then fallback to reportlab's built-in UnicodeCIDFont
+# -------------------- Font setup (PDF rendering) --------------------
+# We prefer a Unicode-capable TTF (DejaVuSans) so Romanian diacritics render correctly.
+# If the font cannot be found/registered, we fall back to Helvetica (may not render all diacritics).
 DEFAULT_FONT = "Helvetica"
 try:
     # Try to find and register DejaVuSans
@@ -66,22 +84,35 @@ def _safe_category_dir(category: str) -> Path:
 
 
 class RankingIn(BaseModel):
+    """Payload used to generate XLSX/PDF exports for a single category."""
     categorie: str
     route_count: int
-    # { "Nume": [scoreR1, scoreR2, ...] }
+    # Score matrix indexed by athlete name and route index:
+    # { "Name": [scoreR1, scoreR2, ...] }
     scores: dict[str, list[float]]
     clubs: dict[str, str] = {}
     include_clubs: bool = False
     times: dict[str, list[float | None]] | None = None
+    # Legacy flag: controls Time column display only (no time-based tie-breaking).
     use_time_tiebreak: bool = False
 
 
 @router.post("/save_ranking")
 def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
+    """
+    Persist category rankings to disk (XLSX + PDF).
+
+    Output path:
+      `escalada/clasamente/<categorie>/`
+
+    Files:
+    - overall.xlsx / overall.pdf: overall ranking across routes (geometric mean of rank-points)
+    - route_{n}.xlsx / route_{n}.pdf: per-route ranking with tie-handling and points column
+    """
     cat_dir = _safe_category_dir(payload.categorie)
     cat_dir.mkdir(parents=True, exist_ok=True)
     raw_times = payload.times or {}
-    # normalize toate timpiile la secunde (int) sau None
+    # Normalize all times to seconds (int) or None so rendering is consistent.
     times = {name: [_to_seconds(t) for t in arr] for name, arr in raw_times.items()}
     # Legacy flag: controls time column display only (no tie-breaking).
     use_time = payload.use_time_tiebreak
@@ -101,12 +132,12 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
     # ---------- excel + pdf BY‑ROUTE ----------
     scores = payload.scores
     for r in range(payload.route_count):
-        # 1. colectează (nume, scor brut) pentru ruta r
+        # 1) collect (name, raw score, time) for route r
         route_list = [
             (name, arr[r] if r < len(arr) else None, time_for(name, r))
             for name, arr in scores.items()
         ]
-        # 2. sortează descrescător (None → ultimii)
+        # 2) sort by score desc (None -> last), then name asc for stable output
         route_list_sorted = sorted(
             route_list,
             key=lambda x: (
@@ -115,7 +146,8 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
             ),
         )
 
-        # 3. calculează punctajele de ranking cu tie-handling
+        # 3) compute per-route ranking points with tie-handling:
+        # ties share the average of the tied positions (e.g. tie for 2nd/3rd => 2.5 points).
         points = {}
         pos = 1
         i = 0
@@ -133,7 +165,7 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
             pos += len(same_score)
             i += len(same_score)
 
-        # tie-handling pe Score per rută
+        # 4) build a "Rank" column with ties (same score -> same rank number)
         ranks = []
         prev_score = None
         prev_rank = 0
@@ -160,7 +192,7 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
             ]
         )
 
-        # 5. salvează Excel și PDF pentru această rută
+        # 5) save Excel and PDF for this route
         xlsx_route = cat_dir / f"route_{r+1}.xlsx"
         pdf_route = cat_dir / f"route_{r+1}.pdf"
         df_route.to_excel(xlsx_route, index=False)
@@ -174,6 +206,15 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
 def _build_overall_df(
     p: RankingIn, normalized_times: dict[str, list[int | None]] | None = None
 ) -> pd.DataFrame:
+    """
+    Build the overall ranking DataFrame.
+
+    Algorithm (matches frontend):
+    - For each route: compute "rank points" per athlete (average-of-positions for ties)
+    - For each athlete: compute geometric mean of rank points across routes
+    - Sort ascending by total (lower is better), then by name for stability
+    - Compute a "Rank" column with ties on equal totals
+    """
     from math import prod
 
     scores = p.scores
@@ -185,7 +226,7 @@ def _build_overall_df(
     n_comp = len(scores)
 
     for name, arr in scores.items():
-        # calcul rank points identic frontend
+        # Compute per-route "rank points" exactly like the frontend does.
         rp: list[float | None] = [None] * n
         for r in range(n):
             scored = []
@@ -215,11 +256,12 @@ def _build_overall_df(
                 pos += len(same)
                 i += len(same)
 
-        # completează lipsurile cu penalizare
+        # Fill missing routes (no score) with a penalty worse than last place.
         filled = [v if v is not None else n_comp + 1 for v in rp]
         while len(filled) < n:
             filled.append(n_comp + 1)
 
+        # Geometric mean keeps totals comparable across different route counts.
         total = round(prod(filled) ** (1 / n), 3)
         club = p.clubs.get(name, "")
         row: list[str | float | None] = [name, club]
@@ -239,6 +281,8 @@ def _build_overall_df(
     cols.append("Total")
     df = pd.DataFrame(data, columns=cols)
     df.sort_values(["Total", "Nume"], inplace=True)
+
+    # Insert a human-readable rank column with ties for identical totals.
     ranks = []
     prev_total = None
     prev_rank = 0
@@ -252,6 +296,7 @@ def _build_overall_df(
 
 
 def _build_by_route_df(p: RankingIn) -> pd.DataFrame:
+    """Build a long-form table (Route/Name/Score/Time) from a RankingIn payload."""
     rows = []
     n = p.route_count
     times = p.times or {}
@@ -267,6 +312,7 @@ def _build_by_route_df(p: RankingIn) -> pd.DataFrame:
 
 
 def _format_time(val) -> str | None:
+    """Format a time value as 'mm:ss' (or None if missing/invalid)."""
     sec = _to_seconds(val)
     if sec is None:
         return None
@@ -276,6 +322,14 @@ def _format_time(val) -> str | None:
 
 
 def _to_seconds(val) -> int | None:
+    """
+    Normalize various time representations into integer seconds.
+
+    Accepts:
+    - numeric seconds (int/float)
+    - 'mm:ss' strings
+    - numeric strings (e.g. '120', '120.0')
+    """
     if val is None:
         return None
     # accept already-numeric
@@ -300,6 +354,7 @@ def _to_seconds(val) -> int | None:
 
 
 def _df_to_pdf(df: pd.DataFrame, pdf_path: Path, title="Ranking"):
+    """Render a DataFrame as a simple landscape-A4 PDF table."""
     # Create document with margins and landscape A4
     doc = SimpleDocTemplate(
         str(pdf_path),

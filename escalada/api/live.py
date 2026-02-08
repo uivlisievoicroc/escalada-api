@@ -1,21 +1,42 @@
 # escalada/api/live.py
+"""
+Live contest API (state + WebSockets).
+
+This module is the "authoritative runtime" for contest state per `box_id`:
+- POST `/api/cmd`: apply commands (timer/progress/scoring/init/reset) with validation + rate limiting
+- WS `/api/ws/{box_id}`: authenticated real-time stream for ControlPanel/ContestPage/JudgePage
+- GET `/api/state/{box_id}`: on-demand state snapshot for hydration/recovery and headless flows
+- Public snapshot/WS: read-only, aggregated updates for spectators
+
+Key design points:
+- In-memory state is protected with a per-box asyncio.Lock (`state_locks`)
+- Box initialization is protected with a global lock (`init_lock`) to avoid races
+- Audit logging is append-only and includes actor metadata via a ContextVar (`current_actor`)
+"""
+
+# -------------------- Standard library imports --------------------
 import asyncio
 import json
 import logging
 import os
 import time
 import uuid
-# state per boxId
+
+# -------------------- Typing/context helpers --------------------
+# ContextVar is used to attach request actor info to state mutations for audit logging.
 from contextvars import ContextVar
 from typing import Any
 from typing import Dict
 
+# -------------------- Third-party imports --------------------
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from starlette.websockets import WebSocket
 
+# -------------------- Local application imports --------------------
+# Rate limiting is applied per box + per command type to keep the server responsive during events.
 from escalada.rate_limit import check_rate_limit
-# Import validation and rate limiting
+# Core command validation + state transition logic (shared with other services).
 from escalada_core import (
     ValidatedCmd,
     ValidationError,
@@ -43,29 +64,46 @@ from escalada.storage.json_store import (
 
 logger = logging.getLogger(__name__)
 
+# -------------------- In-memory contest state (authoritative at runtime) --------------------
+# `state_map` stores the per-box state dict; it is persisted to JSON on each state-changing command.
 state_map: Dict[int, dict] = {}
+# Per-box lock to serialize command application and state persistence for a given box id.
 state_locks: Dict[int, asyncio.Lock] = {}  # Lock per boxId
+# Global init lock protects creation/registration of per-box locks and first state initialization.
 init_lock = asyncio.Lock()  # Protects state_map and state_locks initialization
+# Actor metadata for audit log entries (set in request handlers).
 current_actor: ContextVar[dict[str, Any] | None] = ContextVar("current_actor", default=None)
 
 router = APIRouter()
+# Active authenticated WS subscribers per box id.
 channels: dict[int, set[WebSocket]] = {}
 channels_lock = asyncio.Lock()  # Protects concurrent access to channels dict
+# Public spectators (unauthenticated, aggregated stream).
 public_channels: set[WebSocket] = set()
 public_channels_lock = asyncio.Lock()
 
-# Test mode - disable validation for backward compatibility
+# Validation toggle:
+# - True in normal operation (ValidatedCmd + stale/session checks + rate limiting)
+# - Tests may disable it for backwards compatibility / focused unit scenarios
 VALIDATION_ENABLED = True
+# Global competition officials (not box-specific). Loaded at startup and included in snapshots.
 competition_officials: dict[str, str] = {"judgeChief": "", "competitionDirector": "", "chiefRoutesetter": ""}
 
 
 def get_competition_officials() -> dict[str, str]:
+    """Return a defensive copy of the global competition officials."""
     return dict(competition_officials)
 
 
 def set_competition_officials(
     *, judge_chief: str, competition_director: str, chief_routesetter: str
 ) -> dict[str, str]:
+    """
+    Update global officials (judge chief + director + chief routesetter).
+
+    This is global to the entire event (not per-box/per-route) and is persisted to JSON so
+    ContestPage/Public views can show it consistently even after restarts.
+    """
     global competition_officials
     competition_officials = {
         "judgeChief": (judge_chief or "").strip(),
@@ -100,6 +138,11 @@ def _now_ms() -> int:
 
 
 def _compute_remaining(state: dict, now_ms: int) -> float | None:
+    # Remaining time is derived from (in priority order):
+    # - `timerEndsAtMs` (server-side authoritative countdown while running)
+    # - `timerRemainingSec` (persisted remaining seconds while paused/idle)
+    # - legacy `remaining` (older clients)
+    # - `timerPresetSec` (fallback to full preset)
     ends_at = state.get("timerEndsAtMs")
     if isinstance(ends_at, (int, float)):
         remaining = (float(ends_at) - now_ms) / 1000.0
@@ -121,12 +164,27 @@ def _compute_remaining(state: dict, now_ms: int) -> float | None:
 
 
 def _apply_server_side_timer(state: dict, cmd_payload: dict, now_ms: int) -> None:
+    # Server-side timer implementation:
+    # - Uses `timerEndsAtMs` while running for monotonic, stutter-free countdown
+    # - Stores `timerRemainingSec` when paused/stopped so resume continues from the correct value
+    # - Treats client TIMER_SYNC as best-effort for legacy flows and never allows "time extension"
     cmd_type = cmd_payload.get("type")
 
     if cmd_type == "INIT_ROUTE":
         preset = state.get("timerPresetSec")
         if preset is None:
             preset = parse_timer_preset(cmd_payload.get("timerPreset"))
+        state["timerRemainingSec"] = float(preset) if isinstance(preset, (int, float)) else None
+        state["timerEndsAtMs"] = None
+        return
+
+    if cmd_type == "SET_TIMER_PRESET":
+        preset = state.get("timerPresetSec")
+        if preset is None:
+            preset = parse_timer_preset(cmd_payload.get("timerPreset"))
+        # Do not disrupt an active/pending competitor; apply preset when idle only.
+        if state.get("timerState") in {"running", "paused"}:
+            return
         state["timerRemainingSec"] = float(preset) if isinstance(preset, (int, float)) else None
         state["timerEndsAtMs"] = None
         return
@@ -178,6 +236,12 @@ def _apply_server_side_timer(state: dict, cmd_payload: dict, now_ms: int) -> Non
         return
 
 async def preload_states_from_json() -> int:
+    """
+    Load persisted box states + global officials into memory (JSON-only).
+
+    By default we start clean on each launch to avoid accidental state carry-over between events.
+    To resume previous state, set `RESET_BOXES_ON_START=0/false/no`.
+    """
     ensure_storage_dirs()
 
     # Default behavior: start clean on every launch.
@@ -217,9 +281,17 @@ async def get_all_states_snapshot() -> Dict[int, dict]:
 
 
 class Cmd(BaseModel):
-    """Legacy Cmd model - use ValidatedCmd for new validation"""
+    """
+    Legacy command schema accepted by `/api/cmd`.
+
+    Notes:
+    - When `VALIDATION_ENABLED` is True, this payload is normalized into `ValidatedCmd`
+      (stricter typing + sanitization + required field enforcement).
+    - When validation is disabled (test/back-compat mode), we allow the legacy shape as-is.
+    """
 
     boxId: int
+    # Command type drives which optional fields must be present.
     type: str  # START_TIMER, STOP_TIMER, RESUME_TIMER, PROGRESS_UPDATE, REQUEST_ACTIVE_COMPETITOR, SUBMIT_SCORE, INIT_ROUTE, REQUEST_STATE
 
     # ---- generic optional fields ----
@@ -261,6 +333,12 @@ class Cmd(BaseModel):
 def _get_actor_from_request_and_claims(
     request: Request | None, claims: dict | None
 ) -> dict[str, Any] | None:
+    """
+    Build an audit "actor" object from auth claims + request metadata.
+
+    This is stored in a ContextVar (`current_actor`) so lower-level helpers (_persist_state)
+    can include actor info without threading request objects through every call.
+    """
     if not claims or not isinstance(claims, dict):
         return None
     username = claims.get("sub")
@@ -292,6 +370,8 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
     - Per-command-type limits (e.g., PROGRESS_UPDATE: 120/min)
     """
 
+    # Attach actor metadata (username/role/ip/user-agent) to this request so persistence/audit
+    # helpers can record "who did what" without passing Request everywhere.
     actor_token = current_actor.set(
         _get_actor_from_request_and_claims(
             request,
@@ -337,8 +417,10 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
 
         print(f"Backend received cmd: {cmd}")
 
-        # ==================== ATOMIC STATE INITIALIZATION ====================
-        # CRITICAL FIX: Keep lock acquired across entire initialization to prevent race conditions
+        # ==================== ATOMIC LOCK + STATE INITIALIZATION ====================
+        # CRITICAL: Create the per-box lock under `init_lock`, then hold that per-box lock for the
+        # entire request (including first-time `_ensure_state()` initialization). Without this,
+        # two concurrent requests for a new box can interleave and cause double-init / lost updates.
         # Get or create the box-specific lock under global init_lock protection
         async with init_lock:
             if cmd.boxId not in state_locks:
@@ -468,6 +550,14 @@ async def _broadcast_to_box(box_id: int, payload: dict) -> None:
                 channels.get(box_id, set()).discard(ws)
 
 def _public_preparing_climber(state: dict) -> str:
+    """
+    Best-effort "on deck" climber for public views.
+
+    Public snapshots intentionally do not include the full competitor list, but the UI still
+    wants a lightweight "next up" label. We derive it from the internal competitor list by:
+    - finding `currentClimber` in `competitors`
+    - returning the first *unmarked* competitor after them
+    """
     competitors = state.get("competitors") or []
     if not isinstance(competitors, list):
         return ""
@@ -497,6 +587,14 @@ def _public_preparing_climber(state: dict) -> str:
 
 
 def _build_public_box_state(box_id: int, state: dict) -> dict:
+    """
+    Build the read-only state shape sent to the public hub/WS.
+
+    This is a reduced projection of the internal box state:
+    - does NOT expose the full competitor list (privacy + payload size)
+    - includes enough information for Live Rankings / Live Climbing tiles
+    - computes `remaining` from the authoritative server timer when enabled
+    """
     routes_count = state.get("routesCount")
     if routes_count is None:
         routes_count = state.get("routeIndex") or 1
@@ -524,6 +622,13 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
     }
 
 async def _broadcast_public(payload: dict) -> None:
+    """
+    Best-effort broadcast to all public spectators.
+
+    Unlike the authenticated per-box channel, we keep this simple:
+    - no per-client authorization
+    - remove dead sockets on send errors
+    """
     async with public_channels_lock:
         sockets = list(public_channels)
 
@@ -541,6 +646,7 @@ async def _broadcast_public(payload: dict) -> None:
                 public_channels.discard(ws)
 
 async def _build_public_snapshot_payload() -> dict:
+    """Build a full public snapshot of all boxes (used on connect and on refresh)."""
     async with init_lock:
         items = list(state_map.items())
     return {
@@ -549,6 +655,11 @@ async def _build_public_snapshot_payload() -> dict:
     }
 
 async def _send_public_snapshot(targets: set[WebSocket] | None = None) -> None:
+    """
+    Send a public snapshot either to a specific set of sockets or to everyone.
+
+    `targets` is used on connect/refresh so we don't rebroadcast to all clients unnecessarily.
+    """
     payload = await _build_public_snapshot_payload()
     if targets:
         for ws in list(targets):
@@ -560,6 +671,12 @@ async def _send_public_snapshot(targets: set[WebSocket] | None = None) -> None:
         await _broadcast_public(payload)
 
 async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
+    """
+    Broadcast a single-box update to public spectators.
+
+    This is used for incremental updates (timer/progress/scoring) so public clients can keep
+    their UI current without requesting full snapshots on every command.
+    """
     async with init_lock:
         state = state_map.get(box_id)
     if not state:
@@ -569,8 +686,9 @@ async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
         "box": _build_public_box_state(box_id, state),
     }
     await _broadcast_public(payload)
-    
-    # Also broadcast to per-box public spectators (token-authenticated)
+
+    # Also notify the per-box public feed (separate module) if it is enabled.
+    # Imported lazily to avoid circular imports during startup.
     try:
         from escalada.api.public import broadcast_to_public_box, _send_public_box_snapshot
         await _send_public_box_snapshot(box_id)
@@ -578,6 +696,7 @@ async def _broadcast_public_box_update(box_id: int, update_type: str) -> None:
         pass
 
 def _public_update_type(cmd_type: str) -> str | None:
+    """Map internal command types to public update event types (or None for no public update)."""
     return {
         "INIT_ROUTE": "BOX_STATUS_UPDATE",
         "RESET_BOX": "BOX_STATUS_UPDATE",
@@ -585,6 +704,7 @@ def _public_update_type(cmd_type: str) -> str | None:
         "START_TIMER": "BOX_FLOW_UPDATE",
         "STOP_TIMER": "BOX_FLOW_UPDATE",
         "RESUME_TIMER": "BOX_FLOW_UPDATE",
+        "SET_TIMER_PRESET": "BOX_FLOW_UPDATE",
         "TIMER_SYNC": "BOX_FLOW_UPDATE",
         "REGISTER_TIME": "BOX_FLOW_UPDATE",
         "SUBMIT_SCORE": "BOX_RANKING_UPDATE",
@@ -606,6 +726,16 @@ def _authorize_ws(box_id: int, claims: dict) -> bool:
 
 @router.websocket("/ws/{box_id}")
 async def websocket_endpoint(ws: WebSocket, box_id: int):
+    """
+    Authenticated per-box WebSocket (ControlPanel / ContestPage / JudgePage).
+
+    Flow:
+    - Authenticate token (query param for legacy, then cookie)
+    - Authorize access to the requested box_id
+    - Add subscriber to the per-box channel
+    - Send an initial STATE_SNAPSHOT for hydration
+    - Maintain a heartbeat (PING/PONG) and handle REQUEST_STATE refresh messages
+    """
     peer = ws.client.host if ws.client else None
 
     # Try to get token from query params first (backwards compatible), then from cookie
@@ -639,12 +769,13 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
 
     await ws.accept()
 
-    # Atomically add to channel
+    # Atomically add to channel so broadcasts see a consistent subscriber set.
     async with channels_lock:
         channels.setdefault(box_id, set()).add(ws)
         subscriber_count = len(channels[box_id])
 
     logger.info(f"Client connected to box {box_id}, total: {subscriber_count}")
+    # Immediately send a snapshot so the client can render without waiting for the next command.
     await _send_state_snapshot(box_id, targets={ws})
 
     # Start heartbeat task
@@ -663,7 +794,7 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
                 logger.warning(f"WebSocket receive error for box {box_id}: {e}")
                 break
 
-            # Handle PONG response
+            # Handle lightweight control messages from client (no state mutation over WS here).
             try:
                 msg = json.loads(data) if isinstance(data, str) else data
                 if isinstance(msg, dict):
@@ -674,7 +805,7 @@ async def websocket_endpoint(ws: WebSocket, box_id: int):
                         last_pong["ts"] = asyncio.get_event_loop().time()
                         continue
 
-                    # NEW: Handle REQUEST_STATE command
+                    # REQUEST_STATE lets a client recover after missed messages or tab backgrounding.
                     if msg_type == "REQUEST_STATE":
                         requested_box_id = msg.get("boxId", box_id)
                         try:
@@ -730,6 +861,12 @@ async def public_rankings():
 
 @router.websocket("/public/ws")
 async def public_websocket(ws: WebSocket):
+    """
+    Public (unauthenticated) WebSocket feed for spectators.
+
+    Clients receive PUBLIC_STATE_SNAPSHOT on connect and can request a refresh with REQUEST_STATE.
+    A heartbeat is maintained to detect dead connections.
+    """
     await ws.accept()
 
     async with public_channels_lock:
@@ -759,6 +896,7 @@ async def public_websocket(ws: WebSocket):
                         last_pong["ts"] = asyncio.get_event_loop().time()
                         continue
                     if msg_type == "PING":
+                        # Some clients send PING; respond with PONG for compatibility.
                         await ws.send_text(
                             json.dumps(
                                 {"type": "PONG", "timestamp": msg.get("timestamp")},
@@ -767,6 +905,7 @@ async def public_websocket(ws: WebSocket):
                         )
                         continue
                     if msg_type == "REQUEST_STATE":
+                        # Client-driven refresh: resend the full snapshot.
                         await _send_public_snapshot(targets={ws})
                         continue
             except json.JSONDecodeError:
@@ -810,6 +949,14 @@ async def get_state(box_id: int, claims=Depends(require_view_box_access())):
 
 # helpers
 def _build_snapshot(box_id: int, state: dict) -> dict:
+    """
+    Build the full state snapshot sent to authenticated clients.
+
+    Includes internal fields required by ControlPanel/ContestPage/JudgePage:
+    - competitors list + current flow fields
+    - timer/preset data
+    - global competition officials
+    """
     remaining = state.get("remaining")
     if _server_side_timer_enabled():
         remaining = _compute_remaining(state, _now_ms())
@@ -842,6 +989,13 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
     }
 
 async def _send_state_snapshot(box_id: int, targets: set[WebSocket] | None = None):
+    """
+    Send a STATE_SNAPSHOT either to a specific set of sockets or to the whole box channel.
+
+    Used on:
+    - WS connect (targets={ws})
+    - server-driven refreshes when a command requires a full snapshot
+    """
     # Ensure state exists and get a copy atomically
     state = await _ensure_state(box_id)
     if state is None:
@@ -860,7 +1014,12 @@ async def _send_state_snapshot(box_id: int, targets: set[WebSocket] | None = Non
         await _broadcast_to_box(box_id, payload)
 
 async def _ensure_state(box_id: int) -> dict:
-    """Ensure in-memory state exists (JSON-only)."""
+    """
+    Ensure the in-memory state exists for a box (JSON-only).
+
+    This function only handles *initialization* (create-on-first-use) under `init_lock`.
+    Callers must still use the per-box lock (`state_locks[box_id]`) for any mutations.
+    """
     async with init_lock:
         existing = state_map.get(box_id)
         if existing is not None:
