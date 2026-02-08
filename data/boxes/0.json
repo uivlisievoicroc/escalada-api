@@ -1,60 +1,60 @@
 {
   "initiated": true,
-  "holdsCount": 13,
-  "currentClimber": "Cinca Albert",
-  "preparingClimber": "Scutelnicu Ilie Nicolas",
+  "holdsCount": 12,
+  "currentClimber": "Stamate Sarah",
+  "preparingClimber": "Péterfi Panna",
   "started": false,
   "timerState": "idle",
   "holdCount": 0.0,
   "routeIndex": 1,
   "routesCount": 2,
   "holdsCounts": [
-    13,
+    12,
     21
   ],
   "competitors": [
     {
-      "nume": "Eric Crișan",
+      "nume": "Zaharia Uma",
       "marked": true,
       "club": "CS LINX CLUB"
     },
     {
-      "nume": "Ianc Andrei",
+      "nume": "Lucescu Anastasia",
+      "marked": true,
+      "club": "A.C. Repedea"
+    },
+    {
+      "nume": "Florea Ioana",
+      "marked": true,
+      "club": "CSU Știința Politehnica"
+    },
+    {
+      "nume": "Ana Fîntîneanu",
       "marked": true,
       "club": "One Move"
     },
     {
-      "nume": "Ştiubea Vlad",
+      "nume": "Preda Emilia",
       "marked": true,
       "club": "One Move"
     },
     {
-      "nume": "Cinca Albert",
-      "marked": false,
-      "club": "CS alternative TM"
+      "nume": "Petrușel Eliza",
+      "marked": true,
+      "club": "CS LINX CLUB"
     },
     {
-      "nume": "Scutelnicu Ilie Nicolas",
+      "nume": "Stamate Sarah",
       "marked": false,
-      "club": "Skai"
+      "club": "CS LINX CLUB"
     },
     {
-      "nume": "Căpățână Arno",
-      "marked": false,
-      "club": "Știința Politehnica"
-    },
-    {
-      "nume": "Gyurka Erik",
+      "nume": "Péterfi Panna",
       "marked": false,
       "club": "6 C Plus"
-    },
-    {
-      "nume": "Tarcea Tudor",
-      "marked": false,
-      "club": "CS alternative TM"
     }
   ],
-  "categorie": "caz",
+  "categorie": "1",
   "lastRegisteredTime": null,
   "remaining": 300.0,
   "timerPreset": "05:00",
@@ -62,17 +62,26 @@
   "timerRemainingSec": 300.0,
   "timerEndsAtMs": null,
   "timeCriterionEnabled": false,
-  "sessionId": "612e7f16-2fa4-4a45-ae58-ec944cca21ab",
-  "boxVersion": 36,
+  "sessionId": "7728d77e-2ca2-408b-8d45-3c55c8e324ba",
+  "boxVersion": 63,
   "scores": {
-    "Eric Crișan": [
-      7.0
+    "Zaharia Uma": [
+      9.0
     ],
-    "Ianc Andrei": [
-      4.0
+    "Lucescu Anastasia": [
+      11.0
     ],
-    "Ştiubea Vlad": [
-      13.0
+    "Florea Ioana": [
+      6.0
+    ],
+    "Ana Fîntîneanu": [
+      11.0
+    ],
+    "Preda Emilia": [
+      7.1
+    ],
+    "Petrușel Eliza": [
+      0.0
     ]
   },
   "times": {}
