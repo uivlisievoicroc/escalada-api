@@ -321,6 +321,11 @@ class Cmd(BaseModel):
     # for SET_TIME_CRITERION
     timeCriterionEnabled: bool | None = None
 
+    # for RESET_PARTIAL (checkbox-driven selective reset)
+    resetTimer: bool | None = None
+    clearProgress: bool | None = None
+    unmarkAll: bool | None = None
+
     # for TIMER_SYNC
     remaining: float | None = None
 

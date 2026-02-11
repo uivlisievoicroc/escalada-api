@@ -22,6 +22,15 @@ export STORAGE_DIR=./data
 poetry run uvicorn escalada.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
+## Production Safety Checks
+
+In production (`ENV=production` or `APP_ENV=production`), startup fails fast when unsafe defaults are used:
+
+- `JWT_SECRET` missing or equal to `dev-secret-change-me`
+- `DEFAULT_ADMIN_PASSWORD` missing/empty or equal to `admin`
+
+Set strong values before starting the API.
+
 ## Tests
 
 ```bash

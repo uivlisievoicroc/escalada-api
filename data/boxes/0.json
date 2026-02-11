@@ -1,55 +1,63 @@
 {
   "initiated": true,
-  "holdsCount": 11,
-  "currentClimber": "Alexandru Radu",
-  "preparingClimber": "Nicolici Radu",
-  "started": true,
-  "timerState": "running",
+  "holdsCount": 32,
+  "currentClimber": "",
+  "preparingClimber": "",
+  "started": false,
+  "timerState": "idle",
   "holdCount": 0.0,
   "routeIndex": 1,
   "routesCount": 1,
   "holdsCounts": [
-    11
+    32
   ],
   "competitors": [
     {
-      "nume": "Cireap Paul",
+      "nume": "Ghiurka Éva",
       "marked": true,
-      "club": "One Move"
+      "club": "6C Plus"
     },
     {
-      "nume": "Leonte Matei",
+      "nume": "Chiorean Evelin",
       "marked": true,
-      "club": "A.C Repedea"
+      "club": "CS LINX CLUB"
     },
     {
-      "nume": "Alexandru Radu",
-      "marked": false,
-      "club": "Știința Politehnica"
-    },
-    {
-      "nume": "Nicolici Radu",
-      "marked": false,
-      "club": "One Move"
+      "nume": "Nechifor Ema",
+      "marked": true,
+      "club": "ACS Adrenalin"
     }
   ],
-  "categorie": "6",
-  "lastRegisteredTime": null,
-  "remaining": 0.0,
-  "timerPreset": "05:00",
-  "timerPresetSec": 300,
-  "timerRemainingSec": 300.0,
-  "timerEndsAtMs": 1770804055233,
-  "timeCriterionEnabled": false,
-  "sessionId": "0d94ac93-9530-48eb-9d72-1893e29839f5",
-  "boxVersion": 69,
+  "categorie": "yyy",
+  "lastRegisteredTime": 7.0,
+  "remaining": 340.0,
+  "timerPreset": "05:40",
+  "timerPresetSec": 340,
+  "timerRemainingSec": 340.0,
+  "timerEndsAtMs": null,
+  "timeCriterionEnabled": true,
+  "sessionId": "3b67efb2-3082-4683-bada-690a09562eaa",
+  "boxVersion": 77,
   "scores": {
-    "Cireap Paul": [
-      5.0
+    "Ghiurka Éva": [
+      6.0
     ],
-    "Leonte Matei": [
-      1.0
+    "Chiorean Evelin": [
+      7.0
+    ],
+    "Nechifor Ema": [
+      0.0
     ]
   },
-  "times": {}
+  "times": {
+    "Ghiurka Éva": [
+      6.0
+    ],
+    "Chiorean Evelin": [
+      10.221000000000004
+    ],
+    "Nechifor Ema": [
+      7.0
+    ]
+  }
 }

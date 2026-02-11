@@ -41,6 +41,22 @@ MAX_AUDIT_FILE_SIZE_MB = int(os.getenv("MAX_AUDIT_FILE_SIZE_MB", "50"))
 logger = logging.getLogger(__name__)
 
 
+def _is_production_env() -> bool:
+    env = (os.getenv("ENV") or os.getenv("APP_ENV") or "").strip().lower()
+    return env in {"prod", "production"}
+
+
+def _validate_default_admin_password() -> str:
+    """Return configured admin bootstrap password or raise in unsafe production setups."""
+    password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin")
+    normalized = (password or "").strip()
+    if _is_production_env() and (not normalized or normalized == "admin"):
+        raise RuntimeError(
+            "Unsafe production configuration: DEFAULT_ADMIN_PASSWORD is missing or uses the default value 'admin'."
+        )
+    return password
+
+
 async def _get_box_lock(box_id: int) -> asyncio.Lock:
     # Lazily create the lock for this box id (safe under `_box_locks_lock`).
     async with _box_locks_lock:
@@ -315,7 +331,7 @@ def get_users_with_default_admin() -> Dict[str, dict]:
             from escalada.auth.service import hash_password
 
             now = datetime.now(timezone.utc).isoformat()
-            password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin")
+            password = _validate_default_admin_password()
             users["admin"]["password_hash"] = hash_password(password)
             users["admin"]["updated_at"] = now
             save_users(users)
@@ -324,7 +340,7 @@ def get_users_with_default_admin() -> Dict[str, dict]:
     from escalada.auth.service import hash_password
 
     now = datetime.now(timezone.utc).isoformat()
-    password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin")
+    password = _validate_default_admin_password()
     users["admin"] = {
         "username": "admin",
         "password_hash": hash_password(password),

@@ -32,6 +32,18 @@ COOKIE_NAME = "escalada_token"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
+def _parse_box_id(value: Any) -> int | None:
+    """Parse box id safely; return None for missing/invalid values."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def get_token_from_request(
     request: Request,
     header_token: Optional[str] = Depends(oauth2_scheme),
@@ -117,7 +129,8 @@ async def require_box_access(
     if box_id is None:
         box_id = request.path_params.get("box_id")
 
-    if box_id is None or int(box_id) not in allowed_boxes:
+    parsed_box_id = _parse_box_id(box_id)
+    if parsed_box_id is None or parsed_box_id not in allowed_boxes:
         # If box id is missing or outside the allow-list, reject with a consistent error code.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -149,10 +162,10 @@ def require_view_box_access(param_name: str = "box_id"):
             return claims
 
         allowed_boxes = set(claims.get("boxes") or [])
-        box_id = request.path_params.get(param_name)
+        box_id = _parse_box_id(request.path_params.get(param_name))
 
         # If caller has an explicit allow-list, enforce membership
-        if allowed_boxes and (box_id is None or int(box_id) not in allowed_boxes):
+        if allowed_boxes and (box_id is None or box_id not in allowed_boxes):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="forbidden_box",

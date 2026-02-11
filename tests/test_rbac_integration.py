@@ -98,3 +98,14 @@ def test_get_state_viewer_allowed(client: TestClient):
     body = res.json()
     assert body["boxId"] == 1
     assert body["type"] == "STATE_SNAPSHOT"
+
+
+def test_cmd_invalid_box_id_returns_forbidden_box(client: TestClient):
+    token = _token("judge", boxes=[1])
+    res = client.post(
+        "/api/cmd",
+        json={"boxId": "abc", "type": "START_TIMER"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 403
+    assert res.json()["detail"] == "forbidden_box"

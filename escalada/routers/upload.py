@@ -29,6 +29,57 @@ from escalada.api import live as live_module
 router = APIRouter(tags=["upload"], prefix="/admin")
 
 
+def _parse_routes_count(raw_value: str) -> int:
+    """Parse routesCount form field and enforce positive integer values."""
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="invalid_routes_count")
+    if value <= 0:
+        raise HTTPException(status_code=422, detail="invalid_routes_count")
+    return value
+
+
+def _parse_holds_counts(raw_value: str) -> list[int]:
+    """Parse and validate holdsCounts form field (JSON list of non-negative ints).
+
+    We accept integers, integral floats (e.g. 10.0), and numeric strings ("10") to be
+    resilient to clients that stringify form values.
+    """
+    try:
+        parsed = json.loads(raw_value)
+    except Exception:
+        raise HTTPException(status_code=422, detail="invalid_holds_counts")
+
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=422, detail="invalid_holds_counts")
+
+    validated: list[int] = []
+    for item in parsed:
+        if isinstance(item, bool):
+            raise HTTPException(status_code=422, detail="invalid_holds_counts")
+        if isinstance(item, int):
+            value = item
+        elif isinstance(item, float) and item.is_integer():
+            value = int(item)
+        elif isinstance(item, str):
+            s = item.strip()
+            if not s or not s.isdigit():
+                raise HTTPException(status_code=422, detail="invalid_holds_counts")
+            value = int(s)
+        else:
+            raise HTTPException(status_code=422, detail="invalid_holds_counts")
+        if value < 0:
+            raise HTTPException(status_code=422, detail="invalid_holds_counts")
+        validated.append(value)
+    return validated
+
+
+def _parse_include_clubs(raw_value: str | None) -> bool:
+    value = (raw_value or "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
 @router.post("/upload")
 async def upload_listbox(
     category: str = Form(...),
@@ -56,6 +107,11 @@ async def upload_listbox(
 
     # Load the workbook into memory. openpyxl expects a file-like object.
     data = await file.read()
+
+    routes_count = _parse_routes_count(routesCount)
+    holds_counts_list = _parse_holds_counts(holdsCounts)
+    include_clubs_enabled = _parse_include_clubs(include_clubs)
+
     try:
         wb = openpyxl.load_workbook(filename=BytesIO(data), read_only=True)
     except BadZipFile:
@@ -75,24 +131,25 @@ async def upload_listbox(
         # Convention: row 1 is headers, rows 2..N are competitor data: [Name, Club, ...].
         for row in ws.iter_rows(min_row=2, values_only=True):
             nume, club = row[:2]
-            if nume and club:
-                competitors.append({"nume": str(nume), "club": str(club)})
+            if not nume:
+                continue
+            safe_name = str(nume).strip()
+            if not safe_name:
+                continue
+            entry = {"nume": safe_name}
+            if include_clubs_enabled and club not in (None, ""):
+                safe_club = str(club).strip()
+                if safe_club:
+                    entry["club"] = safe_club
+            competitors.append(entry)
     finally:
         wb.close()
 
-    # Parse holdsCounts from JSON string (Form fields are strings).
-    try:
-        holds_counts_list = json.loads(holdsCounts)
-    except Exception:
-        holds_counts_list = []
-
     # Return the complete listbox object so the frontend can add it immediately.
-    # `routesCount` is a form string; normalize to int for downstream logic.
-    # `include_clubs` is currently accepted for UI compatibility (not embedded into the listbox here).
     new_listbox = {
         "categorie": category,
         "concurenti": competitors,
-        "routesCount": int(routesCount),
+        "routesCount": routes_count,
         "holdsCounts": holds_counts_list,
         "routeIndex": 1,
         "holdsCount": holds_counts_list[0] if holds_counts_list else 0,
