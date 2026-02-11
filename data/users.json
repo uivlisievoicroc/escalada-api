@@ -21,25 +21,25 @@
   },
   "Box 0": {
     "username": "Box 0",
-    "password_hash": "$pbkdf2-sha256$29000$B4DwvjdmrNX6H6N0LuX8Pw$3mk4boF44hZE6YxE5uzZ9umYZ7oqP9c1yW25fhVgst0",
+    "password_hash": "$pbkdf2-sha256$29000$/T8npJSSstYa41wrxRgDIA$uUScqIEuTaG8QjU8GIP74Q0LOOyfQ0acCLORBv6JBqY",
     "role": "judge",
     "assigned_boxes": [
       0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-02-08T13:24:21.863210+00:00"
+    "updated_at": "2026-02-11T09:51:11.360142+00:00"
   },
   "0": {
     "username": "0",
-    "password_hash": "$pbkdf2-sha256$29000$B4DwvjdmrNX6H6N0LuX8Pw$3mk4boF44hZE6YxE5uzZ9umYZ7oqP9c1yW25fhVgst0",
+    "password_hash": "$pbkdf2-sha256$29000$/T8npJSSstYa41wrxRgDIA$uUScqIEuTaG8QjU8GIP74Q0LOOyfQ0acCLORBv6JBqY",
     "role": "judge",
     "assigned_boxes": [
       0
     ],
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
-    "updated_at": "2026-02-08T13:24:21.863210+00:00"
+    "updated_at": "2026-02-11T09:51:11.360142+00:00"
   },
   "12": {
     "username": "12",
@@ -216,5 +216,27 @@
     "is_active": true,
     "created_at": "2026-01-11T10:38:19.865367+00:00",
     "updated_at": "2026-02-08T13:00:11.983337+00:00"
+  },
+  "Under 11 Baieti": {
+    "username": "Under 11 Baieti",
+    "password_hash": "$pbkdf2-sha256$29000$Ycx5r7VWag1BqBWi1BpjLA$JEYaJUGjdQjay.Y//Zblx0aBZqNAAWOsEMQ8QFX4Erk",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-02-10T08:08:44.446274+00:00"
+  },
+  "6": {
+    "username": "6",
+    "password_hash": "$pbkdf2-sha256$29000$/T8npJSSstYa41wrxRgDIA$uUScqIEuTaG8QjU8GIP74Q0LOOyfQ0acCLORBv6JBqY",
+    "role": "judge",
+    "assigned_boxes": [
+      0
+    ],
+    "is_active": true,
+    "created_at": "2026-01-11T10:38:19.865367+00:00",
+    "updated_at": "2026-02-11T09:51:11.360142+00:00"
   }
 }

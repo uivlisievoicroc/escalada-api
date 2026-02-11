@@ -190,6 +190,9 @@ def _apply_server_side_timer(state: dict, cmd_payload: dict, now_ms: int) -> Non
         return
 
     if cmd_type == "RESET_PARTIAL":
+        # RESET_PARTIAL allows selective reset of timer/progress/competitors.
+        # Sync timer state: reset remaining time to preset when timer is reset.
+        # Note: escalada-core handles timerState/holdCount/marked changes; this syncs derived fields.
         if cmd_payload.get("resetTimer") or cmd_payload.get("unmarkAll"):
             preset = state.get("timerPresetSec")
             state["timerRemainingSec"] = float(preset) if isinstance(preset, (int, float)) else None
@@ -460,7 +463,21 @@ async def cmd(cmd: Cmd, request: Request = None, claims=Depends(require_box_acce
                 await _send_state_snapshot(cmd.boxId)
                 return {"status": "ok"}
 
-            outcome = apply_command(sm, cmd.model_dump())
+            # NOTE: For RESET_PARTIAL, we must forward the checkbox flags even if the upstream
+            # Cmd/ValidatedCmd schema doesn't include them (Pydantic would silently drop extras).
+            # We read them from the raw request body and merge into the dict we pass to `apply_command`.
+            cmd_dict = cmd.model_dump()
+            if cmd.type == "RESET_PARTIAL" and request is not None:
+                try:
+                    raw = await request.json()
+                    if isinstance(raw, dict):
+                        for k in ("resetTimer", "clearProgress", "unmarkAll"):
+                            if k in raw and isinstance(raw.get(k), bool):
+                                cmd_dict[k] = raw.get(k)
+                except Exception:
+                    pass
+
+            outcome = apply_command(sm, cmd_dict)
             cmd_payload = outcome.cmd_payload
             if _server_side_timer_enabled():
                 _apply_server_side_timer(sm, cmd_payload, _now_ms())

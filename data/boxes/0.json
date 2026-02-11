@@ -1,25 +1,55 @@
 {
-  "initiated": false,
+  "initiated": true,
   "holdsCount": 11,
-  "currentClimber": "",
-  "preparingClimber": "",
-  "started": false,
-  "timerState": "idle",
+  "currentClimber": "Alexandru Radu",
+  "preparingClimber": "Nicolici Radu",
+  "started": true,
+  "timerState": "running",
   "holdCount": 0.0,
-  "routeIndex": 2,
+  "routeIndex": 1,
   "routesCount": 1,
-  "holdsCounts": [],
-  "competitors": [],
-  "categorie": "",
+  "holdsCounts": [
+    11
+  ],
+  "competitors": [
+    {
+      "nume": "Cireap Paul",
+      "marked": true,
+      "club": "One Move"
+    },
+    {
+      "nume": "Leonte Matei",
+      "marked": true,
+      "club": "A.C Repedea"
+    },
+    {
+      "nume": "Alexandru Radu",
+      "marked": false,
+      "club": "Știința Politehnica"
+    },
+    {
+      "nume": "Nicolici Radu",
+      "marked": false,
+      "club": "One Move"
+    }
+  ],
+  "categorie": "6",
   "lastRegisteredTime": null,
-  "remaining": null,
-  "timerPreset": null,
-  "timerPresetSec": null,
-  "timerRemainingSec": null,
-  "timerEndsAtMs": null,
+  "remaining": 0.0,
+  "timerPreset": "05:00",
+  "timerPresetSec": 300,
+  "timerRemainingSec": 300.0,
+  "timerEndsAtMs": 1770804055233,
   "timeCriterionEnabled": false,
-  "sessionId": "17c9b153-0e3d-4f6f-9a0f-3076f073b542",
-  "boxVersion": 146,
-  "scores": {},
+  "sessionId": "0d94ac93-9530-48eb-9d72-1893e29839f5",
+  "boxVersion": 69,
+  "scores": {
+    "Cireap Paul": [
+      5.0
+    ],
+    "Leonte Matei": [
+      1.0
+    ]
+  },
   "times": {}
 }
