@@ -1,74 +1,42 @@
 {
   "initiated": true,
-  "holdsCount": 11,
-  "currentClimber": "",
+  "holdsCount": 5,
+  "currentClimber": "A",
   "preparingClimber": "",
   "started": false,
   "timerState": "idle",
-  "holdCount": 0.0,
+  "holdCount": 1,
   "routeIndex": 1,
   "routesCount": 1,
-  "holdsCounts": [
-    11
-  ],
+  "holdsCounts": [],
   "competitors": [
     {
-      "nume": "Cireap Paul",
-      "marked": true,
-      "club": "One Move"
-    },
-    {
-      "nume": "Leonte Matei",
-      "marked": true,
-      "club": "A.C Repedea"
-    },
-    {
-      "nume": "Alexandru Radu",
-      "marked": true,
-      "club": "Știința Politehnica"
-    },
-    {
-      "nume": "Nicolici Radu",
-      "marked": true,
-      "club": "One Move"
+      "nume": "A",
+      "marked": false
     }
   ],
-  "categorie": "ttt",
-  "lastRegisteredTime": 6.0,
-  "remaining": 350.0,
-  "timerPreset": "05:50",
-  "timerPresetSec": 350,
-  "timerRemainingSec": 350.0,
+  "categorie": "Cat_1",
+  "lastRegisteredTime": null,
+  "remaining": null,
+  "timerPreset": "05:00",
+  "timerPresetSec": 300,
+  "timerRemainingSec": 300.0,
   "timerEndsAtMs": null,
-  "timeCriterionEnabled": true,
-  "sessionId": "9ded896f-7701-4b63-a65f-f4c8244bb760",
-  "boxVersion": 55,
-  "scores": {
-    "Cireap Paul": [
-      6.0
-    ],
-    "Leonte Matei": [
-      6.0
-    ],
-    "Alexandru Radu": [
-      3.0
-    ],
-    "Nicolici Radu": [
-      0.0
-    ]
-  },
-  "times": {
-    "Cireap Paul": [
-      17.0
-    ],
-    "Leonte Matei": [
-      7.0
-    ],
-    "Alexandru Radu": [
-      8.0
-    ],
-    "Nicolici Radu": [
-      6.0
-    ]
-  }
+  "timeCriterionEnabled": false,
+  "timeTiebreakPreference": null,
+  "timeTiebreakResolvedFingerprint": null,
+  "timeTiebreakResolvedDecision": null,
+  "timeTiebreakDecisions": {},
+  "prevRoundsTiebreakPreference": null,
+  "prevRoundsTiebreakResolvedFingerprint": null,
+  "prevRoundsTiebreakResolvedDecision": null,
+  "prevRoundsTiebreakDecisions": {},
+  "prevRoundsTiebreakOrders": {},
+  "prevRoundsTiebreakRanks": {},
+  "sessionId": "bc36123a-16e2-4ba6-b20e-0ed44753265f",
+  "boxVersion": 5,
+  "leadTiebreakBadgesByName": {},
+  "leadTiebreakBadgesRouteIndex": 1,
+  "scores": {},
+  "times": {}
 }

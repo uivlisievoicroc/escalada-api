@@ -38,6 +38,7 @@ from escalada.api.save_ranking import (
     _format_time,
     _to_seconds,
 )
+from escalada.api.ranking_time_tiebreak import resolve_rankings_with_time_tiebreak
 
 
 def safe_zip_component(val: str) -> str:
@@ -105,6 +106,9 @@ def _build_route_df(
     clubs: dict[str, str],
     route_index: int,
     use_time_tiebreak: bool,
+    rank_override: dict[str, int] | None = None,
+    tb_time_flags: dict[str, bool] | None = None,
+    tb_prev_flags: dict[str, bool] | None = None,
 ) -> pd.DataFrame:
     """
     Build a per-route ranking DataFrame.
@@ -166,6 +170,13 @@ def _build_route_df(
         pos += len(same)
         i += len(same)
 
+    if rank_override:
+        route_entries_sorted = sorted(
+            route_entries_sorted,
+            key=lambda x: (rank_override.get(x[0], 10**9), x[0].lower()),
+        )
+        ranks = [rank_override.get(name, idx + 1) for idx, (name, _, _) in enumerate(route_entries_sorted)]
+
     rows = []
     for idx, (name, score, tm) in enumerate(route_entries_sorted):
         # Include clubs when available; keep schema stable even when clubs are unknown.
@@ -179,8 +190,17 @@ def _build_route_df(
         if use_time_tiebreak:
             # Legacy flag: currently display-only (no time-based tie-breaking here).
             row["Time"] = _format_time(tm)
+        if tb_time_flags:
+            row["TB Time"] = "TB Time" if tb_time_flags.get(name) else ""
+        if tb_prev_flags:
+            row["TB Prev"] = "TB Prev" if tb_prev_flags.get(name) else ""
         rows.append(row)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if "TB Time" in df.columns and not any(bool(v) for v in df["TB Time"].tolist()):
+        df.drop(columns=["TB Time"], inplace=True)
+    if "TB Prev" in df.columns and not any(bool(v) for v in df["TB Prev"].tolist()):
+        df.drop(columns=["TB Prev"], inplace=True)
+    return df
 
 
 def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
@@ -236,15 +256,77 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
         scores=scores,
         times=times,
         use_time_tiebreak=use_time,
+        route_index=int(snapshot.get("routeIndex") or route_count),
+        holds_counts=snapshot.get("holdsCounts")
+        if isinstance(snapshot.get("holdsCounts"), list)
+        else None,
+        active_holds_count=snapshot.get("holdsCount")
+        if isinstance(snapshot.get("holdsCount"), int)
+        else None,
+        box_id=snapshot.get("boxId"),
+        time_tiebreak_resolved_decision=snapshot.get("timeTiebreakResolvedDecision"),
+        time_tiebreak_resolved_fingerprint=snapshot.get("timeTiebreakResolvedFingerprint"),
+        time_tiebreak_preference=snapshot.get("timeTiebreakPreference"),
+        time_tiebreak_decisions=snapshot.get("timeTiebreakDecisions"),
+        prev_rounds_tiebreak_resolved_decision=snapshot.get("prevRoundsTiebreakResolvedDecision"),
+        prev_rounds_tiebreak_resolved_fingerprint=snapshot.get("prevRoundsTiebreakResolvedFingerprint"),
+        prev_rounds_tiebreak_preference=snapshot.get("prevRoundsTiebreakPreference"),
+        prev_rounds_tiebreak_decisions=snapshot.get("prevRoundsTiebreakDecisions"),
+        prev_rounds_tiebreak_orders=snapshot.get("prevRoundsTiebreakOrders"),
+        prev_rounds_tiebreak_ranks_by_fingerprint=snapshot.get("prevRoundsTiebreakRanks"),
         clubs=clubs,
         include_clubs=bool(clubs),
     )
+
+    tiebreak_context = resolve_rankings_with_time_tiebreak(
+        scores=scores,
+        times=times,
+        route_count=route_count,
+        active_route_index=int(snapshot.get("routeIndex") or route_count),
+        box_id=snapshot.get("boxId"),
+        time_criterion_enabled=use_time,
+        active_holds_count=snapshot.get("holdsCount")
+        if isinstance(snapshot.get("holdsCount"), int)
+        else None,
+        prev_resolved_decisions=snapshot.get("prevRoundsTiebreakDecisions"),
+        prev_orders_by_fingerprint=snapshot.get("prevRoundsTiebreakOrders"),
+        prev_ranks_by_fingerprint=snapshot.get("prevRoundsTiebreakRanks"),
+        prev_resolved_fingerprint=snapshot.get("prevRoundsTiebreakResolvedFingerprint"),
+        prev_resolved_decision=snapshot.get("prevRoundsTiebreakResolvedDecision"),
+        resolved_decisions=snapshot.get("timeTiebreakDecisions"),
+        resolved_fingerprint=snapshot.get("timeTiebreakResolvedFingerprint"),
+        resolved_decision=snapshot.get("timeTiebreakResolvedDecision"),
+    )
+    overall_rank_override = {
+        row["name"]: int(row["rank"]) for row in tiebreak_context["overall_rows"]
+    }
+    overall_tb_flags = {
+        row["name"]: bool(row.get("tb_time")) for row in tiebreak_context["overall_rows"]
+    }
+    overall_tb_prev_flags = {
+        row["name"]: bool(row.get("tb_prev")) for row in tiebreak_context["overall_rows"]
+    }
+    active_route_rank_override = {
+        row["name"]: int(row["rank"]) for row in tiebreak_context["route_rows"]
+    }
+    active_route_tb_flags = {
+        row["name"]: bool(row.get("tb_time")) for row in tiebreak_context["route_rows"]
+    }
+    active_route_tb_prev_flags = {
+        row["name"]: bool(row.get("tb_prev")) for row in tiebreak_context["route_rows"]
+    }
 
     with TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
 
         # Overall files (XLSX + PDF)
-        overall_df = _build_overall_df(payload, times)
+        overall_df = _build_overall_df(
+            payload,
+            times,
+            rank_override=overall_rank_override,
+            tb_time_flags=overall_tb_flags,
+            tb_prev_flags=overall_tb_prev_flags,
+        )
         overall_xlsx = tmp_dir / "overall.xlsx"
         overall_pdf = tmp_dir / "overall.pdf"
         overall_df.to_excel(overall_xlsx, index=False)
@@ -254,12 +336,16 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
 
         # Per-route files (XLSX + PDF)
         for r in range(route_count):
+            is_active_route = (r + 1) == int(snapshot.get("routeIndex") or route_count)
             df_route = _build_route_df(
                 scores=scores,
                 times=times,
                 clubs=clubs,
                 route_index=r,
                 use_time_tiebreak=use_time,
+                rank_override=active_route_rank_override if is_active_route else None,
+                tb_time_flags=active_route_tb_flags if is_active_route else None,
+                tb_prev_flags=active_route_tb_prev_flags if is_active_route else None,
             )
             xlsx_route = tmp_dir / f"route_{r+1}.xlsx"
             pdf_route = tmp_dir / f"route_{r+1}.pdf"
@@ -274,6 +360,20 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
             "categorie": snapshot.get("categorie"),
             "routesCount": route_count,
             "timeCriterionEnabled": bool(snapshot.get("timeCriterionEnabled")),
+            "timeTiebreakPreference": snapshot.get("timeTiebreakPreference"),
+            "timeTiebreakDecisions": snapshot.get("timeTiebreakDecisions") or {},
+            "timeTiebreakResolvedFingerprint": snapshot.get("timeTiebreakResolvedFingerprint"),
+            "timeTiebreakResolvedDecision": snapshot.get("timeTiebreakResolvedDecision"),
+            "prevRoundsTiebreakPreference": snapshot.get("prevRoundsTiebreakPreference"),
+            "prevRoundsTiebreakDecisions": snapshot.get("prevRoundsTiebreakDecisions") or {},
+            "prevRoundsTiebreakOrders": snapshot.get("prevRoundsTiebreakOrders") or {},
+            "prevRoundsTiebreakRanks": snapshot.get("prevRoundsTiebreakRanks") or {},
+            "prevRoundsTiebreakResolvedFingerprint": snapshot.get("prevRoundsTiebreakResolvedFingerprint"),
+            "prevRoundsTiebreakResolvedDecision": snapshot.get("prevRoundsTiebreakResolvedDecision"),
+            "timeTiebreakCurrentFingerprint": tiebreak_context.get("fingerprint"),
+            "timeTiebreakHasEligibleTie": tiebreak_context.get("has_eligible_tie"),
+            "timeTiebreakIsResolved": tiebreak_context.get("is_resolved"),
+            "timeTiebreakEligibleGroups": tiebreak_context.get("eligible_groups") or [],
             "clubs": clubs,
             "exportedAt": exported_at,
         }

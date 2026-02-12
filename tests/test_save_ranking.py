@@ -182,6 +182,105 @@ class BuildRankingDataTest(unittest.TestCase):
         self.assertEqual(df.iloc[1]["Rank"], 1)
         self.assertEqual(df.iloc[0]["Nume"], "Alice")
 
+    def test_ranking_with_time_tiebreak_yes_splits_top3_tie(self):
+        from escalada.api.save_ranking import _build_overall_df, RankingIn
+        from escalada.api.ranking_time_tiebreak import resolve_rankings_with_time_tiebreak
+
+        payload = RankingIn(
+            categorie="Test",
+            route_count=1,
+            route_index=1,
+            box_id=2,
+            scores={"Alice": [100], "Bob": [100], "Charlie": [95]},
+            times={"Alice": [10.5], "Bob": [12.3], "Charlie": [9.0]},
+            use_time_tiebreak=True,
+            clubs={},
+        )
+
+        context = resolve_rankings_with_time_tiebreak(
+            scores=payload.scores,
+            times=payload.times or {},
+            route_count=payload.route_count,
+            active_route_index=payload.route_index or payload.route_count,
+            box_id=payload.box_id,
+            time_criterion_enabled=True,
+            resolved_fingerprint=None,
+            resolved_decision=None,
+        )
+        rank_override = {row["name"]: int(row["rank"]) for row in context["overall_rows"]}
+        tb_flags = {row["name"]: bool(row.get("tb_time")) for row in context["overall_rows"]}
+
+        resolved_context = resolve_rankings_with_time_tiebreak(
+            scores=payload.scores,
+            times=payload.times or {},
+            route_count=payload.route_count,
+            active_route_index=payload.route_index or payload.route_count,
+            box_id=payload.box_id,
+            time_criterion_enabled=True,
+            prev_resolved_decisions={
+                group["fingerprint"]: "no" for group in context["eligible_groups"]
+            },
+            resolved_fingerprint=context["fingerprint"],
+            resolved_decision="yes",
+        )
+        rank_override = {row["name"]: int(row["rank"]) for row in resolved_context["overall_rows"]}
+        tb_flags = {row["name"]: bool(row.get("tb_time")) for row in resolved_context["overall_rows"]}
+
+        df = _build_overall_df(payload, rank_override=rank_override, tb_time_flags=tb_flags)
+        self.assertEqual(df.iloc[0]["Nume"], "Alice")
+        self.assertEqual(df.iloc[0]["Rank"], 1)
+        self.assertEqual(df.iloc[1]["Nume"], "Bob")
+        self.assertEqual(df.iloc[1]["Rank"], 2)
+        self.assertIn("TB Time", df.columns)
+        self.assertEqual(df.iloc[0]["TB Time"], "TB Time")
+
+    def test_ranking_with_prev_rounds_tiebreak_adds_tb_prev_column(self):
+        from escalada.api.save_ranking import _build_overall_df, RankingIn
+        from escalada.api.ranking_time_tiebreak import resolve_rankings_with_time_tiebreak
+
+        payload = RankingIn(
+            categorie="Test",
+            route_count=1,
+            route_index=1,
+            box_id=3,
+            scores={"Alice": [100], "Bob": [100], "Charlie": [95]},
+            times={"Alice": [20], "Bob": [10], "Charlie": [30]},
+            use_time_tiebreak=True,
+            clubs={},
+        )
+
+        context = resolve_rankings_with_time_tiebreak(
+            scores=payload.scores,
+            times=payload.times or {},
+            route_count=payload.route_count,
+            active_route_index=payload.route_index or payload.route_count,
+            box_id=payload.box_id,
+            time_criterion_enabled=True,
+        )
+        fp = context["eligible_groups"][0]["fingerprint"]
+        resolved = resolve_rankings_with_time_tiebreak(
+            scores=payload.scores,
+            times=payload.times or {},
+            route_count=payload.route_count,
+            active_route_index=payload.route_index or payload.route_count,
+            box_id=payload.box_id,
+            time_criterion_enabled=True,
+            prev_resolved_decisions={fp: "yes"},
+            prev_orders_by_fingerprint={fp: ["Alice"]},
+        )
+        rank_override = {row["name"]: int(row["rank"]) for row in resolved["overall_rows"]}
+        tb_time = {row["name"]: bool(row.get("tb_time")) for row in resolved["overall_rows"]}
+        tb_prev = {row["name"]: bool(row.get("tb_prev")) for row in resolved["overall_rows"]}
+        df = _build_overall_df(
+            payload,
+            rank_override=rank_override,
+            tb_time_flags=tb_time,
+            tb_prev_flags=tb_prev,
+        )
+        self.assertIn("TB Prev", df.columns)
+        self.assertEqual(df.iloc[0]["Nume"], "Alice")
+        self.assertEqual(df.iloc[0]["TB Prev"], "TB Prev")
+
     def test_ranking_empty_scores(self):
         """Test ranking with empty scores dict"""
         from escalada.api.save_ranking import _build_overall_df, RankingIn

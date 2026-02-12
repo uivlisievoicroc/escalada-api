@@ -61,6 +61,7 @@ from escalada.storage.json_store import (
     save_competition_officials,
     save_box_state,
 )
+from escalada.api.ranking_time_tiebreak import resolve_rankings_with_time_tiebreak
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,14 @@ class Cmd(BaseModel):
 
     # for SET_TIME_CRITERION
     timeCriterionEnabled: bool | None = None
+    # for SET_TIME_TIEBREAK_DECISION
+    timeTiebreakDecision: str | None = None
+    timeTiebreakFingerprint: str | None = None
+    # for SET_PREV_ROUNDS_TIEBREAK_DECISION
+    prevRoundsTiebreakDecision: str | None = None
+    prevRoundsTiebreakFingerprint: str | None = None
+    prevRoundsTiebreakOrder: list[str] | None = None
+    prevRoundsTiebreakRanksByName: dict[str, int] | None = None
 
     # for RESET_PARTIAL (checkbox-driven selective reset)
     resetTimer: bool | None = None
@@ -608,6 +617,63 @@ def _public_preparing_climber(state: dict) -> str:
     return ""
 
 
+def _merge_persistent_tiebreak_badges(
+    state: dict,
+    route_index: int,
+    ranking_rows: list[dict] | None,
+) -> list[dict]:
+    rows = ranking_rows if isinstance(ranking_rows, list) else []
+    if not rows:
+        state["leadTiebreakBadgesByName"] = {}
+        state["leadTiebreakBadgesRouteIndex"] = route_index
+        return []
+
+    initiated = bool(state.get("initiated"))
+    if not initiated:
+        state["leadTiebreakBadgesByName"] = {}
+        state["leadTiebreakBadgesRouteIndex"] = route_index
+        return rows
+
+    prev_route_index = state.get("leadTiebreakBadgesRouteIndex")
+    if prev_route_index != route_index:
+        state["leadTiebreakBadgesByName"] = {}
+        state["leadTiebreakBadgesRouteIndex"] = route_index
+
+    badges = state.get("leadTiebreakBadgesByName")
+    if not isinstance(badges, dict):
+        badges = {}
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        prev_flags = badges.get(name) if isinstance(badges.get(name), dict) else {}
+        next_prev = bool(prev_flags.get("tb_prev")) or bool(row.get("tb_prev"))
+        next_time = bool(prev_flags.get("tb_time")) or bool(row.get("tb_time"))
+        if next_prev or next_time:
+            badges[name] = {"tb_prev": next_prev, "tb_time": next_time}
+
+    merged_rows: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        merged = dict(row)
+        name = merged.get("name")
+        if isinstance(name, str):
+            flags = badges.get(name) if isinstance(badges.get(name), dict) else {}
+            if bool(flags.get("tb_prev")):
+                merged["tb_prev"] = True
+            if bool(flags.get("tb_time")):
+                merged["tb_time"] = True
+        merged_rows.append(merged)
+
+    state["leadTiebreakBadgesByName"] = badges
+    state["leadTiebreakBadgesRouteIndex"] = route_index
+    return merged_rows
+
+
 def _build_public_box_state(box_id: int, state: dict) -> dict:
     """
     Build the read-only state shape sent to the public hub/WS.
@@ -626,6 +692,34 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
     remaining = state.get("remaining")
     if _server_side_timer_enabled():
         remaining = _compute_remaining(state, _now_ms())
+    route_index = int(state.get("routeIndex") or 1)
+    routes_count = int(routes_count or route_index or 1)
+    scores_by_name = state.get("scores") or {}
+    times_by_name = state.get("times") or {}
+    tiebreak_state = resolve_rankings_with_time_tiebreak(
+        scores=scores_by_name,
+        times=times_by_name,
+        route_count=routes_count,
+        active_route_index=route_index,
+        box_id=box_id,
+        time_criterion_enabled=bool(state.get("timeCriterionEnabled", False)),
+        active_holds_count=state.get("holdsCount")
+        if isinstance(state.get("holdsCount"), int)
+        else None,
+        prev_resolved_decisions=state.get("prevRoundsTiebreakDecisions"),
+        prev_orders_by_fingerprint=state.get("prevRoundsTiebreakOrders"),
+        prev_ranks_by_fingerprint=state.get("prevRoundsTiebreakRanks"),
+        prev_resolved_fingerprint=state.get("prevRoundsTiebreakResolvedFingerprint"),
+        prev_resolved_decision=state.get("prevRoundsTiebreakResolvedDecision"),
+        resolved_decisions=state.get("timeTiebreakDecisions"),
+        resolved_fingerprint=state.get("timeTiebreakResolvedFingerprint"),
+        resolved_decision=state.get("timeTiebreakResolvedDecision"),
+    )
+    merged_lead_rows = _merge_persistent_tiebreak_badges(
+        state,
+        route_index,
+        tiebreak_state.get("lead_ranking_rows") or [],
+    )
     return {
         "boxId": box_id,
         "categorie": state.get("categorie", ""),
@@ -639,8 +733,26 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
         "timerState": state.get("timerState", "idle"),
         "remaining": remaining,
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
-        "scoresByName": state.get("scores") or {},
-        "timesByName": state.get("times") or {},
+        "timeTiebreakPreference": state.get("timeTiebreakPreference"),
+        "timeTiebreakDecisions": state.get("timeTiebreakDecisions") or {},
+        "timeTiebreakResolvedFingerprint": state.get("timeTiebreakResolvedFingerprint"),
+        "timeTiebreakResolvedDecision": state.get("timeTiebreakResolvedDecision"),
+        "prevRoundsTiebreakPreference": state.get("prevRoundsTiebreakPreference"),
+        "prevRoundsTiebreakDecisions": state.get("prevRoundsTiebreakDecisions") or {},
+        "prevRoundsTiebreakOrders": state.get("prevRoundsTiebreakOrders") or {},
+        "prevRoundsTiebreakRanks": state.get("prevRoundsTiebreakRanks") or {},
+        "prevRoundsTiebreakResolvedFingerprint": state.get("prevRoundsTiebreakResolvedFingerprint"),
+        "prevRoundsTiebreakResolvedDecision": state.get("prevRoundsTiebreakResolvedDecision"),
+        "timeTiebreakCurrentFingerprint": tiebreak_state.get("fingerprint"),
+        "timeTiebreakHasEligibleTie": tiebreak_state.get("has_eligible_tie"),
+        "timeTiebreakIsResolved": tiebreak_state.get("is_resolved"),
+        "timeTiebreakEligibleGroups": tiebreak_state.get("eligible_groups") or [],
+        "leadRankingRows": merged_lead_rows,
+        "leadTieEvents": tiebreak_state.get("lead_tie_events") or [],
+        "leadRankingResolved": tiebreak_state.get("lead_ranking_resolved"),
+        "leadRankingErrors": tiebreak_state.get("errors") or [],
+        "scoresByName": scores_by_name,
+        "timesByName": times_by_name,
     }
 
 async def _broadcast_public(payload: dict) -> None:
@@ -731,6 +843,8 @@ def _public_update_type(cmd_type: str) -> str | None:
         "REGISTER_TIME": "BOX_FLOW_UPDATE",
         "SUBMIT_SCORE": "BOX_RANKING_UPDATE",
         "SET_TIME_CRITERION": "BOX_RANKING_UPDATE",
+        "SET_TIME_TIEBREAK_DECISION": "BOX_RANKING_UPDATE",
+        "SET_PREV_ROUNDS_TIEBREAK_DECISION": "BOX_RANKING_UPDATE",
     }.get(cmd_type)
 
 def _authorize_ws(box_id: int, claims: dict) -> bool:
@@ -982,6 +1096,34 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
     remaining = state.get("remaining")
     if _server_side_timer_enabled():
         remaining = _compute_remaining(state, _now_ms())
+    route_index = int(state.get("routeIndex") or 1)
+    routes_count = int(state.get("routesCount") or route_index or 1)
+    scores_by_name = state.get("scores") or {}
+    times_by_name = state.get("times") or {}
+    tiebreak_state = resolve_rankings_with_time_tiebreak(
+        scores=scores_by_name,
+        times=times_by_name,
+        route_count=routes_count,
+        active_route_index=route_index,
+        box_id=box_id,
+        time_criterion_enabled=bool(state.get("timeCriterionEnabled", False)),
+        active_holds_count=state.get("holdsCount")
+        if isinstance(state.get("holdsCount"), int)
+        else None,
+        prev_resolved_decisions=state.get("prevRoundsTiebreakDecisions"),
+        prev_orders_by_fingerprint=state.get("prevRoundsTiebreakOrders"),
+        prev_ranks_by_fingerprint=state.get("prevRoundsTiebreakRanks"),
+        prev_resolved_fingerprint=state.get("prevRoundsTiebreakResolvedFingerprint"),
+        prev_resolved_decision=state.get("prevRoundsTiebreakResolvedDecision"),
+        resolved_decisions=state.get("timeTiebreakDecisions"),
+        resolved_fingerprint=state.get("timeTiebreakResolvedFingerprint"),
+        resolved_decision=state.get("timeTiebreakResolvedDecision"),
+    )
+    merged_lead_rows = _merge_persistent_tiebreak_badges(
+        state,
+        route_index,
+        tiebreak_state.get("lead_ranking_rows") or [],
+    )
     officials = get_competition_officials()
     return {
         "type": "STATE_SNAPSHOT",
@@ -1001,6 +1143,26 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "registeredTime": state.get("lastRegisteredTime"),
         "remaining": remaining,
         "timeCriterionEnabled": state.get("timeCriterionEnabled", False),
+        "timeTiebreakPreference": state.get("timeTiebreakPreference"),
+        "timeTiebreakDecisions": state.get("timeTiebreakDecisions") or {},
+        "timeTiebreakResolvedFingerprint": state.get("timeTiebreakResolvedFingerprint"),
+        "timeTiebreakResolvedDecision": state.get("timeTiebreakResolvedDecision"),
+        "prevRoundsTiebreakPreference": state.get("prevRoundsTiebreakPreference"),
+        "prevRoundsTiebreakDecisions": state.get("prevRoundsTiebreakDecisions") or {},
+        "prevRoundsTiebreakOrders": state.get("prevRoundsTiebreakOrders") or {},
+        "prevRoundsTiebreakRanks": state.get("prevRoundsTiebreakRanks") or {},
+        "prevRoundsTiebreakResolvedFingerprint": state.get("prevRoundsTiebreakResolvedFingerprint"),
+        "prevRoundsTiebreakResolvedDecision": state.get("prevRoundsTiebreakResolvedDecision"),
+        "timeTiebreakCurrentFingerprint": tiebreak_state.get("fingerprint"),
+        "timeTiebreakHasEligibleTie": tiebreak_state.get("has_eligible_tie"),
+        "timeTiebreakIsResolved": tiebreak_state.get("is_resolved"),
+        "timeTiebreakEligibleGroups": tiebreak_state.get("eligible_groups") or [],
+        "leadRankingRows": merged_lead_rows,
+        "leadTieEvents": tiebreak_state.get("lead_tie_events") or [],
+        "leadRankingResolved": tiebreak_state.get("lead_ranking_resolved"),
+        "leadRankingErrors": tiebreak_state.get("errors") or [],
+        "scoresByName": scores_by_name,
+        "timesByName": times_by_name,
         "timerPreset": state.get("timerPreset"),
         "timerPresetSec": state.get("timerPresetSec"),
         "judgeChief": officials.get("judgeChief", ""),

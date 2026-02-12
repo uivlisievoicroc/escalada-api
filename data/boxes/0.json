@@ -1,6 +1,6 @@
 {
-  "initiated": true,
-  "holdsCount": 32,
+  "initiated": false,
+  "holdsCount": 11,
   "currentClimber": "",
   "preparingClimber": "",
   "started": false,
@@ -8,56 +8,59 @@
   "holdCount": 0.0,
   "routeIndex": 1,
   "routesCount": 1,
-  "holdsCounts": [
-    32
-  ],
-  "competitors": [
-    {
-      "nume": "Ghiurka Éva",
-      "marked": true,
-      "club": "6C Plus"
-    },
-    {
-      "nume": "Chiorean Evelin",
-      "marked": true,
-      "club": "CS LINX CLUB"
-    },
-    {
-      "nume": "Nechifor Ema",
-      "marked": true,
-      "club": "ACS Adrenalin"
-    }
-  ],
-  "categorie": "yyy",
-  "lastRegisteredTime": 7.0,
-  "remaining": 340.0,
-  "timerPreset": "05:40",
-  "timerPresetSec": 340,
-  "timerRemainingSec": 340.0,
+  "holdsCounts": [],
+  "competitors": [],
+  "categorie": "",
+  "lastRegisteredTime": null,
+  "remaining": null,
+  "timerPreset": null,
+  "timerPresetSec": null,
+  "timerRemainingSec": null,
   "timerEndsAtMs": null,
   "timeCriterionEnabled": true,
-  "sessionId": "3b67efb2-3082-4683-bada-690a09562eaa",
-  "boxVersion": 77,
-  "scores": {
-    "Ghiurka Éva": [
-      6.0
-    ],
-    "Chiorean Evelin": [
-      7.0
-    ],
-    "Nechifor Ema": [
-      0.0
-    ]
+  "timeTiebreakPreference": null,
+  "timeTiebreakResolvedFingerprint": null,
+  "timeTiebreakResolvedDecision": null,
+  "timeTiebreakDecisions": {},
+  "prevRoundsTiebreakPreference": null,
+  "prevRoundsTiebreakResolvedFingerprint": null,
+  "prevRoundsTiebreakResolvedDecision": null,
+  "prevRoundsTiebreakDecisions": {},
+  "prevRoundsTiebreakOrders": {},
+  "prevRoundsTiebreakRanks": {},
+  "sessionId": "eb6ed0bd-0435-42ad-83dc-7a4f236bb2d5",
+  "boxVersion": 119,
+  "leadTiebreakBadgesByName": {
+    "Eric Crișan": {
+      "tb_prev": false,
+      "tb_time": true
+    },
+    "Ianc Andrei": {
+      "tb_prev": false,
+      "tb_time": true
+    },
+    "Ştiubea Vlad": {
+      "tb_prev": false,
+      "tb_time": true
+    },
+    "Cinca Albert": {
+      "tb_prev": false,
+      "tb_time": true
+    },
+    "Scutelnicu Ilie Nicolas": {
+      "tb_prev": false,
+      "tb_time": true
+    },
+    "Căpățână Arno": {
+      "tb_prev": false,
+      "tb_time": true
+    },
+    "Gyurka Erik": {
+      "tb_prev": true,
+      "tb_time": false
+    }
   },
-  "times": {
-    "Ghiurka Éva": [
-      6.0
-    ],
-    "Chiorean Evelin": [
-      10.221000000000004
-    ],
-    "Nechifor Ema": [
-      7.0
-    ]
-  }
+  "leadTiebreakBadgesRouteIndex": 1,
+  "scores": {},
+  "times": {}
 }

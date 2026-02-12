@@ -31,6 +31,7 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
                                 TableStyle)
+from escalada.api.ranking_time_tiebreak import resolve_rankings_with_time_tiebreak
 
 # -------------------- Font setup (PDF rendering) --------------------
 # We prefer a Unicode-capable TTF (DejaVuSans) so Romanian diacritics render correctly.
@@ -95,6 +96,24 @@ class RankingIn(BaseModel):
     times: dict[str, list[float | None]] | None = None
     # Legacy flag: controls Time column display only (no time-based tie-breaking).
     use_time_tiebreak: bool = False
+    # Current active route index (1-based), used for top-3 route-context tiebreak.
+    route_index: int | None = None
+    holds_counts: list[int] | None = None
+    active_holds_count: int | None = None
+    # Optional box id to make tie fingerprints deterministic across boxes.
+    box_id: int | None = None
+    # Persisted manual tie decision state.
+    time_tiebreak_resolved_decision: str | None = None
+    time_tiebreak_resolved_fingerprint: str | None = None
+    time_tiebreak_preference: str | None = None
+    time_tiebreak_decisions: dict[str, str] | None = None
+    prev_rounds_tiebreak_resolved_decision: str | None = None
+    prev_rounds_tiebreak_resolved_fingerprint: str | None = None
+    prev_rounds_tiebreak_preference: str | None = None
+    prev_rounds_tiebreak_decisions: dict[str, str] | None = None
+    prev_rounds_tiebreak_orders: dict[str, list[str]] | None = None
+    prev_rounds_tiebreak_ranks_by_fingerprint: dict[str, dict[str, int]] | None = None
+    prev_rounds_tiebreak_resolved_ranks_by_name: dict[str, int] | None = None
 
 
 @router.post("/save_ranking")
@@ -116,13 +135,63 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
     times = {name: [_to_seconds(t) for t in arr] for name, arr in raw_times.items()}
     # Legacy flag: controls time column display only (no tie-breaking).
     use_time = payload.use_time_tiebreak
+    active_route_index = payload.route_index or payload.route_count
+    derived_holds_count = payload.active_holds_count
+    if derived_holds_count is None and isinstance(payload.holds_counts, list):
+        idx = max(0, int(active_route_index) - 1)
+        if idx < len(payload.holds_counts):
+            candidate = payload.holds_counts[idx]
+            if isinstance(candidate, int):
+                derived_holds_count = candidate
+    tiebreak_context = resolve_rankings_with_time_tiebreak(
+        scores=payload.scores,
+        times=times,
+        route_count=payload.route_count,
+        active_route_index=active_route_index,
+        box_id=payload.box_id,
+        time_criterion_enabled=bool(use_time),
+        active_holds_count=derived_holds_count,
+        prev_resolved_decisions=payload.prev_rounds_tiebreak_decisions,
+        prev_orders_by_fingerprint=payload.prev_rounds_tiebreak_orders,
+        prev_ranks_by_fingerprint=payload.prev_rounds_tiebreak_ranks_by_fingerprint,
+        prev_resolved_fingerprint=payload.prev_rounds_tiebreak_resolved_fingerprint,
+        prev_resolved_decision=payload.prev_rounds_tiebreak_resolved_decision,
+        prev_resolved_ranks_by_name=payload.prev_rounds_tiebreak_resolved_ranks_by_name,
+        resolved_decisions=payload.time_tiebreak_decisions,
+        resolved_fingerprint=payload.time_tiebreak_resolved_fingerprint,
+        resolved_decision=payload.time_tiebreak_resolved_decision,
+    )
+    overall_rank_override = {
+        row["name"]: int(row["rank"]) for row in tiebreak_context["overall_rows"]
+    }
+    overall_tb_time = {
+        row["name"]: bool(row.get("tb_time")) for row in tiebreak_context["overall_rows"]
+    }
+    overall_tb_prev = {
+        row["name"]: bool(row.get("tb_prev")) for row in tiebreak_context["overall_rows"]
+    }
+    active_route_rank_override = {
+        row["name"]: int(row["rank"]) for row in tiebreak_context["route_rows"]
+    }
+    active_route_tb_time = {
+        row["name"]: bool(row.get("tb_time")) for row in tiebreak_context["route_rows"]
+    }
+    active_route_tb_prev = {
+        row["name"]: bool(row.get("tb_prev")) for row in tiebreak_context["route_rows"]
+    }
 
     def time_for(name: str, idx: int):
         arr = times.get(name, [])
         return _to_seconds(arr[idx]) if idx < len(arr) else None
 
     # ---------- excel + pdf TOTAL ----------
-    overall_df = _build_overall_df(payload, times)
+    overall_df = _build_overall_df(
+        payload,
+        times,
+        rank_override=overall_rank_override,
+        tb_time_flags=overall_tb_time,
+        tb_prev_flags=overall_tb_prev,
+    )
     xlsx_tot = cat_dir / "overall.xlsx"
     pdf_tot = cat_dir / "overall.pdf"
     overall_df.to_excel(xlsx_tot, index=False)
@@ -178,6 +247,20 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
             prev_score = score
             prev_rank = rank
 
+        is_active_route = (r + 1) == int(active_route_index)
+        if is_active_route:
+            route_list_sorted = sorted(
+                route_list_sorted,
+                key=lambda item: (
+                    active_route_rank_override.get(item[0], 10**9),
+                    item[0].lower(),
+                ),
+            )
+            ranks = [
+                active_route_rank_override.get(name, ranks[idx])
+                for idx, (name, _, _) in enumerate(route_list_sorted)
+            ]
+
         df_route = pd.DataFrame(
             [
                 {
@@ -186,6 +269,20 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
                     "Club": payload.clubs.get(name, ""),
                     "Score": score,
                     **({"Time": _format_time(tm)} if use_time else {}),
+                    **(
+                        {
+                            "TB Time": "TB Time"
+                            if is_active_route and active_route_tb_time.get(name)
+                            else ""
+                        }
+                    ),
+                    **(
+                        {
+                            "TB Prev": "TB Prev"
+                            if is_active_route and active_route_tb_prev.get(name)
+                            else ""
+                        }
+                    ),
                     "Points": points.get(name),
                 }
                 for i, (name, score, tm) in enumerate(route_list_sorted)
@@ -199,12 +296,22 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
         _df_to_pdf(df_route, pdf_route, title=f"{payload.categorie} – Route {r+1}")
         saved_paths.extend([xlsx_route, pdf_route])
 
-    return {"status": "ok", "saved": [str(p) for p in saved_paths]}
+    return {
+        "status": "ok",
+        "saved": [str(p) for p in saved_paths],
+        "time_tiebreak_fingerprint": tiebreak_context.get("fingerprint"),
+        "time_tiebreak_has_eligible_tie": tiebreak_context.get("has_eligible_tie"),
+        "time_tiebreak_is_resolved": tiebreak_context.get("is_resolved"),
+    }
 
 
 # ------- helpers -------
 def _build_overall_df(
-    p: RankingIn, normalized_times: dict[str, list[int | None]] | None = None
+    p: RankingIn,
+    normalized_times: dict[str, list[int | None]] | None = None,
+    rank_override: dict[str, int] | None = None,
+    tb_time_flags: dict[str, bool] | None = None,
+    tb_prev_flags: dict[str, bool] | None = None,
 ) -> pd.DataFrame:
     """
     Build the overall ranking DataFrame.
@@ -221,7 +328,7 @@ def _build_overall_df(
     times = normalized_times if normalized_times is not None else (p.times or {})
     # Legacy flag: controls time column display only (no tie-breaking).
     use_time = p.use_time_tiebreak
-    data = []
+    rows_data = []
     n = p.route_count
     n_comp = len(scores)
 
@@ -271,7 +378,7 @@ def _build_overall_df(
             if use_time:
                 row.append(_format_time(time_row[idx] if idx < len(time_row) else None))
         row.append(total)
-        data.append(row)
+        rows_data.append((name, row))
 
     cols = ["Nume", "Club"]
     for i in range(n):
@@ -279,18 +386,52 @@ def _build_overall_df(
         if use_time:
             cols.append(f"Time R{i+1}")
     cols.append("Total")
-    df = pd.DataFrame(data, columns=cols)
-    df.sort_values(["Total", "Nume"], inplace=True)
-
-    # Insert a human-readable rank column with ties for identical totals.
-    ranks = []
-    prev_total = None
-    prev_rank = 0
-    for idx, total in enumerate(df["Total"], start=1):
-        rank = prev_rank if total == prev_total else idx
-        ranks.append(rank)
-        prev_total = total
-        prev_rank = rank
+    if rank_override:
+        rows_data.sort(
+            key=lambda item: (
+                rank_override.get(item[0], 10**9),
+                item[1][-1],
+                item[0].lower(),
+            )
+        )
+        data = [row for _, row in rows_data]
+        df = pd.DataFrame(data, columns=cols)
+        ranks = [rank_override.get(name, idx + 1) for idx, (name, _) in enumerate(rows_data)]
+    else:
+        data = [row for _, row in rows_data]
+        df = pd.DataFrame(data, columns=cols)
+        df.sort_values(["Total", "Nume"], inplace=True)
+        # Insert a human-readable rank column with ties for identical totals.
+        ranks = []
+        prev_total = None
+        prev_rank = 0
+        for idx, total in enumerate(df["Total"], start=1):
+            rank = prev_rank if total == prev_total else idx
+            ranks.append(rank)
+            prev_total = total
+            prev_rank = rank
+    if tb_time_flags:
+        tb_values = []
+        if rank_override:
+            for name, _ in rows_data:
+                tb_values.append("TB Time" if tb_time_flags.get(name) else "")
+        else:
+            for _, row in df.iterrows():
+                name = str(row["Nume"])
+                tb_values.append("TB Time" if tb_time_flags.get(name) else "")
+        if any(tb_values):
+            df["TB Time"] = tb_values
+    if tb_prev_flags:
+        prev_values = []
+        if rank_override:
+            for name, _ in rows_data:
+                prev_values.append("TB Prev" if tb_prev_flags.get(name) else "")
+        else:
+            for _, row in df.iterrows():
+                name = str(row["Nume"])
+                prev_values.append("TB Prev" if tb_prev_flags.get(name) else "")
+        if any(prev_values):
+            df["TB Prev"] = prev_values
     df.insert(0, "Rank", ranks)
     return df
 
