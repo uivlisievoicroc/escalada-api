@@ -127,7 +127,10 @@ def test_invalid_previous_rounds_input_reports_error():
         prev_ranks_by_fingerprint={fp: {"Ana": 1}},
     )
     assert result["is_resolved"] is False
-    assert result["errors"]
+    assert result["errors"] == []
+    rows = {row["name"]: row for row in result["overall_rows"]}
+    assert rows["Ana"]["rank"] == 1
+    assert rows["Bob"]["rank"] == 2
 
 
 def test_old_podium_decision_does_not_split_when_tie_moves_below_podium():
@@ -194,3 +197,38 @@ def test_tail_below_podium_collapses_when_tie_group_spans_3_4_5():
     assert rows["Ana"]["rank"] == 3
     assert rows["Bob"]["rank"] == 4
     assert rows["Cara"]["rank"] == 4
+
+
+def test_incremental_prev_rounds_memory_keeps_existing_split_when_tie_expands():
+    initial = _ctx(
+        scores={"Ana": [10.0], "Bob": [10.0], "Dan": [8.0]},
+        times={"Ana": [100], "Bob": [120], "Dan": [200]},
+    )
+    fp_prev = initial["eligible_groups"][0]["fingerprint"]
+    lineage_key = initial["eligible_groups"][0]["lineage_key"]
+    resolved_two = _ctx(
+        scores={"Ana": [10.0], "Bob": [10.0], "Dan": [8.0]},
+        times={"Ana": [100], "Bob": [120], "Dan": [200]},
+        prev_resolved_decisions={fp_prev: "yes"},
+        prev_ranks_by_fingerprint={fp_prev: {"Ana": 1, "Bob": 2}},
+        prev_lineage_ranks_by_key={lineage_key: {"Ana": 1, "Bob": 2}},
+    )
+    rows_two = {row["name"]: row for row in resolved_two["overall_rows"]}
+    assert rows_two["Ana"]["rank"] == 1
+    assert rows_two["Bob"]["rank"] == 2
+
+    expanded = _ctx(
+        scores={"Ana": [10.0], "Bob": [10.0], "Cris": [10.0], "Dan": [8.0]},
+        times={"Ana": [100], "Bob": [120], "Cris": [140], "Dan": [200]},
+        prev_lineage_ranks_by_key={lineage_key: {"Ana": 1, "Bob": 2}},
+    )
+    rows_expanded = {row["name"]: row for row in expanded["overall_rows"]}
+    assert rows_expanded["Ana"]["rank"] == 1
+    assert rows_expanded["Bob"]["rank"] == 2
+    assert rows_expanded["Cris"]["rank"] == 3
+    pending_prev = [ev for ev in expanded["eligible_groups"] if ev["stage"] == "previous_rounds"]
+    assert pending_prev
+    assert pending_prev[0]["lineage_key"] == lineage_key
+    assert pending_prev[0]["known_prev_ranks_by_name"] == {"Ana": 1, "Bob": 2}
+    assert pending_prev[0]["missing_prev_rounds_members"] == ["Cris"]
+    assert pending_prev[0]["requires_prev_rounds_input"] is True

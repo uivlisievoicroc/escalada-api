@@ -28,34 +28,23 @@
   "prevRoundsTiebreakDecisions": {},
   "prevRoundsTiebreakOrders": {},
   "prevRoundsTiebreakRanks": {},
-  "sessionId": "eb6ed0bd-0435-42ad-83dc-7a4f236bb2d5",
-  "boxVersion": 119,
+  "prevRoundsTiebreakLineageRanks": {},
+  "sessionId": "6e066748-92aa-47c4-bc4e-d74893df1406",
+  "boxVersion": 221,
   "leadTiebreakBadgesByName": {
-    "Eric Crișan": {
+    "Zaharia Uma": {
       "tb_prev": false,
       "tb_time": true
     },
-    "Ianc Andrei": {
+    "Lucescu Anastasia": {
       "tb_prev": false,
       "tb_time": true
     },
-    "Ştiubea Vlad": {
-      "tb_prev": false,
-      "tb_time": true
+    "Florea Ioana": {
+      "tb_prev": true,
+      "tb_time": false
     },
-    "Cinca Albert": {
-      "tb_prev": false,
-      "tb_time": true
-    },
-    "Scutelnicu Ilie Nicolas": {
-      "tb_prev": false,
-      "tb_time": true
-    },
-    "Căpățână Arno": {
-      "tb_prev": false,
-      "tb_time": true
-    },
-    "Gyurka Erik": {
+    "Petrușel Eliza": {
       "tb_prev": true,
       "tb_time": false
     }

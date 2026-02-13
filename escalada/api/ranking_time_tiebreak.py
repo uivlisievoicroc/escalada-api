@@ -231,24 +231,28 @@ class _StateBackedResolver:
         prev_decisions: dict[str, str],
         prev_orders: dict[str, list[str]],
         prev_ranks: dict[str, dict[str, int]],
+        prev_lineage_ranks: dict[str, dict[str, int]],
         time_decisions: dict[str, str],
         global_fingerprint: str | None,
         event_prev_fingerprint: str | None,
         event_prev_decision: str | None,
         event_prev_order: list[str] | None,
         event_prev_ranks: dict[str, int] | None,
+        event_prev_lineage_key: str | None,
         event_time_fingerprint: str | None,
         event_time_decision: str | None,
     ):
         self.prev_decisions = prev_decisions
         self.prev_orders = prev_orders
         self.prev_ranks = prev_ranks
+        self.prev_lineage_ranks = prev_lineage_ranks
         self.time_decisions = time_decisions
         self.global_fingerprint = global_fingerprint
         self.event_prev_fingerprint = event_prev_fingerprint
         self.event_prev_decision = event_prev_decision
         self.event_prev_order = event_prev_order
         self.event_prev_ranks = event_prev_ranks
+        self.event_prev_lineage_key = event_prev_lineage_key
         self.event_time_fingerprint = event_time_fingerprint
         self.event_time_decision = event_time_decision
         self._prev_fp_by_signature: dict[tuple[tuple[str, ...], int, int], str] = {}
@@ -270,27 +274,75 @@ class _StateBackedResolver:
         )
         if context.stage == "previous_rounds":
             self._prev_fp_by_signature[signature] = context.fingerprint
+            member_ids = {a.id for a in group}
+            lineage_key = (
+                context.lineage_key.strip()
+                if isinstance(context.lineage_key, str) and context.lineage_key.strip()
+                else None
+            )
+            lineage_ranks: dict[str, int] = {}
+            if lineage_key:
+                lineage_ranks = {
+                    athlete_id: int(rank)
+                    for athlete_id, rank in (self.prev_lineage_ranks.get(lineage_key) or {}).items()
+                    if athlete_id in member_ids
+                }
+            if (
+                not lineage_ranks
+                and lineage_key
+                and isinstance(self.event_prev_lineage_key, str)
+                and self.event_prev_lineage_key == lineage_key
+            ):
+                lineage_ranks = {
+                    athlete_id: int(rank)
+                    for athlete_id, rank in (self.event_prev_ranks or {}).items()
+                    if athlete_id in member_ids
+                }
             decision = self.prev_decisions.get(context.fingerprint)
             if decision not in {"yes", "no"} and self._matches_event_scope(
                 self.event_prev_fingerprint, context.fingerprint
             ):
                 decision = self.event_prev_decision
+            if decision not in {"yes", "no"} and lineage_ranks:
+                decision = "yes"
             if decision not in {"yes", "no"}:
                 return TieBreakDecision(choice="pending")
             if decision == "no":
                 return TieBreakDecision(choice="no")
-            ranks = self.prev_ranks.get(context.fingerprint)
-            if ranks is None and self._matches_event_scope(
+            merged_ranks: dict[str, int] = dict(lineage_ranks)
+            fp_ranks = self.prev_ranks.get(context.fingerprint)
+            if isinstance(fp_ranks, dict):
+                merged_ranks.update(
+                    {
+                        athlete_id: int(rank)
+                        for athlete_id, rank in fp_ranks.items()
+                        if athlete_id in member_ids
+                    }
+                )
+            if not merged_ranks:
+                order_ranks = _order_to_ranks(
+                    self.prev_orders.get(context.fingerprint), [a.id for a in group]
+                )
+                if isinstance(order_ranks, dict):
+                    merged_ranks.update(order_ranks)
+            if not merged_ranks and self._matches_event_scope(
                 self.event_prev_fingerprint, context.fingerprint
             ):
-                ranks = self.event_prev_ranks
-            if not ranks:
-                ranks = _order_to_ranks(self.prev_orders.get(context.fingerprint), [a.id for a in group])
-            if not ranks and self._matches_event_scope(
-                self.event_prev_fingerprint, context.fingerprint
+                order_ranks = _order_to_ranks(self.event_prev_order, [a.id for a in group])
+                if isinstance(order_ranks, dict):
+                    merged_ranks.update(order_ranks)
+            if (
+                isinstance(self.event_prev_ranks, dict)
+                and self._matches_event_scope(self.event_prev_fingerprint, context.fingerprint)
             ):
-                ranks = _order_to_ranks(self.event_prev_order, [a.id for a in group])
-            return TieBreakDecision(choice="yes", previous_ranks_by_athlete=ranks or {})
+                merged_ranks.update(
+                    {
+                        athlete_id: int(rank)
+                        for athlete_id, rank in self.event_prev_ranks.items()
+                        if athlete_id in member_ids
+                    }
+                )
+            return TieBreakDecision(choice="yes", previous_ranks_by_athlete=merged_ranks or {})
 
         decision = self.time_decisions.get(context.fingerprint)
         if decision not in {"yes", "no"}:
@@ -322,10 +374,12 @@ def resolve_rankings_with_time_tiebreak(
     prev_resolved_decisions: dict[str, str] | None = None,
     prev_orders_by_fingerprint: dict[str, list[str]] | None = None,
     prev_ranks_by_fingerprint: dict[str, dict[str, int]] | None = None,
+    prev_lineage_ranks_by_key: dict[str, dict[str, int]] | None = None,
     prev_resolved_fingerprint: str | None = None,
     prev_resolved_decision: str | None = None,
     prev_resolved_order: list[str] | None = None,
     prev_resolved_ranks_by_name: dict[str, int] | None = None,
+    prev_resolved_lineage_key: str | None = None,
     resolved_decisions: dict[str, str] | None = None,
     resolved_fingerprint: str | None = None,
     resolved_decision: str | None = None,
@@ -456,6 +510,7 @@ def resolve_rankings_with_time_tiebreak(
             if isinstance(item, str) and item.strip()
         ]
     normalized_prev_ranks = _normalize_ranks_map(prev_ranks_by_fingerprint)
+    normalized_prev_lineage_ranks = _normalize_ranks_map(prev_lineage_ranks_by_key)
     event_prev_ranks = None
     if isinstance(prev_resolved_ranks_by_name, dict):
         event_prev_ranks = {
@@ -536,6 +591,7 @@ def resolve_rankings_with_time_tiebreak(
         prev_decisions=normalized_prev_decisions,
         prev_orders=normalized_prev_orders,
         prev_ranks=normalized_prev_ranks,
+        prev_lineage_ranks=normalized_prev_lineage_ranks,
         time_decisions=normalized_time_decisions,
         global_fingerprint=event_fp,
         event_prev_fingerprint=prev_resolved_fingerprint.strip()
@@ -546,6 +602,9 @@ def resolve_rankings_with_time_tiebreak(
         else None,
         event_prev_order=prev_resolved_order if isinstance(prev_resolved_order, list) else None,
         event_prev_ranks=event_prev_ranks,
+        event_prev_lineage_key=prev_resolved_lineage_key.strip()
+        if isinstance(prev_resolved_lineage_key, str) and prev_resolved_lineage_key.strip()
+        else None,
         event_time_fingerprint=resolved_fingerprint.strip()
         if isinstance(resolved_fingerprint, str)
         else None,
@@ -557,7 +616,7 @@ def resolve_rankings_with_time_tiebreak(
         results=results,
         tie_break_resolver=resolver if bool(time_criterion_enabled) else None,
         podium_places=3,
-        round_name="Final",
+        round_name=f"Final|route:{active_route_norm}",
     )
 
     row_by_id = {row.athlete_id: row for row in core_result.rows}
@@ -612,6 +671,17 @@ def resolve_rankings_with_time_tiebreak(
             if event.stage == "time"
             else None
         )
+        known_prev = {
+            name: int(rank)
+            for name, rank in (event.known_prev_ranks_by_athlete or {}).items()
+            if isinstance(name, str) and isinstance(rank, int) and rank > 0
+        }
+        if not known_prev:
+            known_prev = {
+                name: int(rank)
+                for name, rank in (normalized_prev_ranks.get(event.fingerprint) or {}).items()
+                if isinstance(name, str) and isinstance(rank, int) and rank > 0
+            }
         eligible_groups.append(
             {
                 "context": "overall",
@@ -625,7 +695,11 @@ def resolve_rankings_with_time_tiebreak(
                 "detail": event.detail,
                 "prev_rounds_decision": prev_decision if prev_decision in {"yes", "no"} else None,
                 "prev_rounds_order": normalized_prev_orders.get(event.fingerprint),
-                "prev_rounds_ranks_by_name": normalized_prev_ranks.get(event.fingerprint),
+                "prev_rounds_ranks_by_name": known_prev or None,
+                "lineage_key": event.lineage_key,
+                "known_prev_ranks_by_name": known_prev or {},
+                "missing_prev_rounds_members": list(event.missing_prev_rounds_athlete_ids or []),
+                "requires_prev_rounds_input": bool(event.requires_prev_rounds_input),
                 "time_decision": time_decision if time_decision in {"yes", "no"} else None,
                 "resolved_decision": time_decision if time_decision in {"yes", "no"} else None,
                 "resolution_kind": "time" if event.stage == "time" else "previous_rounds",
@@ -643,6 +717,7 @@ def resolve_rankings_with_time_tiebreak(
         "prev_resolved_decisions": normalized_prev_decisions,
         "prev_orders_by_fingerprint": normalized_prev_orders,
         "prev_ranks_by_fingerprint": normalized_prev_ranks,
+        "prev_lineage_ranks_by_key": normalized_prev_lineage_ranks,
         "resolved_decisions": normalized_time_decisions,
         "fingerprint": event_fp,
         "has_eligible_tie": has_eligible_tie,

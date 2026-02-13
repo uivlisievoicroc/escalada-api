@@ -113,6 +113,7 @@ class RankingIn(BaseModel):
     prev_rounds_tiebreak_decisions: dict[str, str] | None = None
     prev_rounds_tiebreak_orders: dict[str, list[str]] | None = None
     prev_rounds_tiebreak_ranks_by_fingerprint: dict[str, dict[str, int]] | None = None
+    prev_rounds_tiebreak_lineage_ranks_by_key: dict[str, dict[str, int]] | None = None
     prev_rounds_tiebreak_resolved_ranks_by_name: dict[str, int] | None = None
 
 
@@ -154,6 +155,7 @@ def save_ranking(payload: RankingIn, claims=Depends(require_role(["admin"]))):
         prev_resolved_decisions=payload.prev_rounds_tiebreak_decisions,
         prev_orders_by_fingerprint=payload.prev_rounds_tiebreak_orders,
         prev_ranks_by_fingerprint=payload.prev_rounds_tiebreak_ranks_by_fingerprint,
+        prev_lineage_ranks_by_key=payload.prev_rounds_tiebreak_lineage_ranks_by_key,
         prev_resolved_fingerprint=payload.prev_rounds_tiebreak_resolved_fingerprint,
         prev_resolved_decision=payload.prev_rounds_tiebreak_resolved_decision,
         prev_resolved_ranks_by_name=payload.prev_rounds_tiebreak_resolved_ranks_by_name,

@@ -274,6 +274,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
         prev_rounds_tiebreak_decisions=snapshot.get("prevRoundsTiebreakDecisions"),
         prev_rounds_tiebreak_orders=snapshot.get("prevRoundsTiebreakOrders"),
         prev_rounds_tiebreak_ranks_by_fingerprint=snapshot.get("prevRoundsTiebreakRanks"),
+        prev_rounds_tiebreak_lineage_ranks_by_key=snapshot.get("prevRoundsTiebreakLineageRanks"),
         clubs=clubs,
         include_clubs=bool(clubs),
     )
@@ -291,6 +292,7 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
         prev_resolved_decisions=snapshot.get("prevRoundsTiebreakDecisions"),
         prev_orders_by_fingerprint=snapshot.get("prevRoundsTiebreakOrders"),
         prev_ranks_by_fingerprint=snapshot.get("prevRoundsTiebreakRanks"),
+        prev_lineage_ranks_by_key=snapshot.get("prevRoundsTiebreakLineageRanks"),
         prev_resolved_fingerprint=snapshot.get("prevRoundsTiebreakResolvedFingerprint"),
         prev_resolved_decision=snapshot.get("prevRoundsTiebreakResolvedDecision"),
         resolved_decisions=snapshot.get("timeTiebreakDecisions"),
@@ -368,6 +370,8 @@ def build_official_results_zip(snapshot: dict[str, Any]) -> bytes:
             "prevRoundsTiebreakDecisions": snapshot.get("prevRoundsTiebreakDecisions") or {},
             "prevRoundsTiebreakOrders": snapshot.get("prevRoundsTiebreakOrders") or {},
             "prevRoundsTiebreakRanks": snapshot.get("prevRoundsTiebreakRanks") or {},
+            "prevRoundsTiebreakLineageRanks": snapshot.get("prevRoundsTiebreakLineageRanks")
+            or {},
             "prevRoundsTiebreakResolvedFingerprint": snapshot.get("prevRoundsTiebreakResolvedFingerprint"),
             "prevRoundsTiebreakResolvedDecision": snapshot.get("prevRoundsTiebreakResolvedDecision"),
             "timeTiebreakCurrentFingerprint": tiebreak_context.get("fingerprint"),

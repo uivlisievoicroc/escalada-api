@@ -327,6 +327,7 @@ class Cmd(BaseModel):
     # for SET_PREV_ROUNDS_TIEBREAK_DECISION
     prevRoundsTiebreakDecision: str | None = None
     prevRoundsTiebreakFingerprint: str | None = None
+    prevRoundsTiebreakLineageKey: str | None = None
     prevRoundsTiebreakOrder: list[str] | None = None
     prevRoundsTiebreakRanksByName: dict[str, int] | None = None
 
@@ -709,6 +710,7 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
         prev_resolved_decisions=state.get("prevRoundsTiebreakDecisions"),
         prev_orders_by_fingerprint=state.get("prevRoundsTiebreakOrders"),
         prev_ranks_by_fingerprint=state.get("prevRoundsTiebreakRanks"),
+        prev_lineage_ranks_by_key=state.get("prevRoundsTiebreakLineageRanks"),
         prev_resolved_fingerprint=state.get("prevRoundsTiebreakResolvedFingerprint"),
         prev_resolved_decision=state.get("prevRoundsTiebreakResolvedDecision"),
         resolved_decisions=state.get("timeTiebreakDecisions"),
@@ -741,6 +743,7 @@ def _build_public_box_state(box_id: int, state: dict) -> dict:
         "prevRoundsTiebreakDecisions": state.get("prevRoundsTiebreakDecisions") or {},
         "prevRoundsTiebreakOrders": state.get("prevRoundsTiebreakOrders") or {},
         "prevRoundsTiebreakRanks": state.get("prevRoundsTiebreakRanks") or {},
+        "prevRoundsTiebreakLineageRanks": state.get("prevRoundsTiebreakLineageRanks") or {},
         "prevRoundsTiebreakResolvedFingerprint": state.get("prevRoundsTiebreakResolvedFingerprint"),
         "prevRoundsTiebreakResolvedDecision": state.get("prevRoundsTiebreakResolvedDecision"),
         "timeTiebreakCurrentFingerprint": tiebreak_state.get("fingerprint"),
@@ -1113,6 +1116,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         prev_resolved_decisions=state.get("prevRoundsTiebreakDecisions"),
         prev_orders_by_fingerprint=state.get("prevRoundsTiebreakOrders"),
         prev_ranks_by_fingerprint=state.get("prevRoundsTiebreakRanks"),
+        prev_lineage_ranks_by_key=state.get("prevRoundsTiebreakLineageRanks"),
         prev_resolved_fingerprint=state.get("prevRoundsTiebreakResolvedFingerprint"),
         prev_resolved_decision=state.get("prevRoundsTiebreakResolvedDecision"),
         resolved_decisions=state.get("timeTiebreakDecisions"),
@@ -1151,6 +1155,7 @@ def _build_snapshot(box_id: int, state: dict) -> dict:
         "prevRoundsTiebreakDecisions": state.get("prevRoundsTiebreakDecisions") or {},
         "prevRoundsTiebreakOrders": state.get("prevRoundsTiebreakOrders") or {},
         "prevRoundsTiebreakRanks": state.get("prevRoundsTiebreakRanks") or {},
+        "prevRoundsTiebreakLineageRanks": state.get("prevRoundsTiebreakLineageRanks") or {},
         "prevRoundsTiebreakResolvedFingerprint": state.get("prevRoundsTiebreakResolvedFingerprint"),
         "prevRoundsTiebreakResolvedDecision": state.get("prevRoundsTiebreakResolvedDecision"),
         "timeTiebreakCurrentFingerprint": tiebreak_state.get("fingerprint"),
